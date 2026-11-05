@@ -1,0 +1,77 @@
+# アニ漢 — アニメ漢字テスト（iPad / Apple Pencil 対応）
+
+アニメのタイトルやキャラクター名によく使われる漢字を **1万字** 収録した、手書きの漢字書き取りテストアプリです。
+iPad の Safari で動く Web アプリ（PWA）なので、インストール不要・ホーム画面に追加すればアプリのように全画面で使えます。
+
+## 主な機能
+
+| 機能 | 内容 |
+|---|---|
+| 1万字収録 | JIS第1〜第4水準を中心に 10,000字。アニメのタイトル・キャラ名・頻出語（約1,900件の独自コーパス）での出現が多い順に並べています |
+| ランク分け | 1000字ごとに **10ランク**（見習い → 駆け出し → 一人前 → 熟練者 → 達人 → 師範 → 賢者 → 大賢者 → 伝説 → 神）。各ランク 100ステージ × 10字 |
+| 90点で次へ | ステージテストは 10問 × 10点。**100点中90点以上で合格**すると次のステージが解放。100ステージをクリアしたら **昇格試験**（20問 × 5点、90点以上）で次のランクへ。上級者向けに「飛び級試験」も可能 |
+| 忘却曲線で復習 | 字ごとに記憶の安定度 S を記録し、記憶保持率 `R = 0.9^(経過日数 / S)` が **90%** を下回る頃に復習を出題。正解するたびに間隔が約2.5倍（1日→3日→6日→2週間→1か月…）、間違えると10分後から覚え直し。アプリを開くと復習アラート、アイコンバッジ、カレンダー通知（.ics）で復習を促します |
+| Apple Pencil で解答 | 筆圧対応のキャンバスに手書き。ペンを検出すると指・手のひらのタッチを自動で無視（パームリジェクション）。1画戻す／消す／なぞり書き練習 |
+| 自動採点 | 手書き文字を認識して正誤判定（認識候補の1位／3位／5位までを選択可）。誤認識時は「認識ミス（正解にする）」で訂正可能。オフライン時はお手本と見比べる自己採点に自動で切り替え |
+| 漢字図鑑 | 1万字を学習状態（未学習・学習中・要復習・定着）で色分け表示。漢字・読み・英語で検索、字ごとの忘却曲線グラフ |
+| データ保護 | 学習データは端末内に保存。JSON でバックアップ／復元 |
+
+## iPad で使う
+
+1. このリポジトリを GitHub Pages などの静的ホスティングで公開します（下記）。
+2. iPad の Safari で公開 URL を開きます。
+3. 共有ボタン →「ホーム画面に追加」。以後はホーム画面のアイコンから全画面で起動できます。
+   ホーム画面に追加しておくと、Safari による学習データの自動削除も避けられます。
+
+### GitHub Pages で公開する
+
+1. GitHub のリポジトリ画面で **Settings → Pages** を開きます。
+2. **Build and deployment** の Source を「Deploy from a branch」、Branch を公開したいブランチ・`/ (root)` にして Save。
+3. 数分後に `https://<ユーザー名>.github.io/ipad/` で開けるようになります。
+
+※ ビルド手順は不要です（静的ファイルのみ）。ローカルで試す場合は `python3 -m http.server` などで配信してください（`file://` では動きません）。
+
+## 手書き認識について
+
+自動採点では、書いた線の座標データを Google の手書き入力（Input Tools）の認識サービスに送信して文字を判定します。
+通信できないときや、設定で「自己採点」を選んだときは、端末の外にデータを送りません。
+
+## ファイル構成
+
+```
+index.html              画面の骨組み
+css/style.css           デザイン（ライト／ダーク対応）
+js/app.js               画面・テスト進行・ランク解放
+js/srs.js               忘却曲線にもとづく復習スケジューラ
+js/ink.js               Apple Pencil 手書きキャンバス
+js/recognize.js         手書き文字認識・採点
+js/store.js             学習データの保存・バックアップ
+js/data.js              漢字データへのアクセス・検索
+data/kanji-data.js      1万字のデータ（自動生成）
+tools/anime_corpus.txt  アニメタイトル・キャラクター名・頻出語コーパス
+tools/build_data.py     漢字データ生成スクリプト
+sw.js / manifest.webmanifest / icons/   PWA（オフライン対応・ホーム画面アイコン）
+```
+
+## 漢字データの作り方
+
+`data/kanji-data.js` は `tools/build_data.py` で生成しています。
+
+```sh
+# EDRDG の辞書データ（KANJIDIC2 / JMdict / JMnedict）を SQLite 化した jamdict-data を取得
+curl -LO https://files.pythonhosted.org/packages/97/a5/075928aed2b3b70459fc1db396397dfa6714d266c143c51af9b648551a4e/jamdict_data-1.5.tar.gz
+tar xzf jamdict_data-1.5.tar.gz
+xz -dk jamdict_data-1.5/jamdict_data/jamdict.db.xz
+python3 tools/build_data.py jamdict_data-1.5/jamdict_data/jamdict.db
+```
+
+並び順のスコアは、アニメコーパスでの出現数を最も重く、次いで一般語（JMdict）・人名や地名（JMnedict）での使用数、新聞での使用頻度、常用漢字・人名用漢字かどうかを加味しています。
+出題には、アニメタイトル／キャラクター名／頻出語 → 一般語 → 人名・地名 の順で例を選び、例がない字は読み・部首・画数・意味から出題します。
+コーパス（`tools/anime_corpus.txt`）に作品名やキャラクター名を追加して再生成すれば、出題や並び順に反映されます。
+
+## ライセンス・出典
+
+- 漢字・単語・人名データ: [KANJIDIC2](https://www.edrdg.org/wiki/index.php/KANJIDIC_Project)、[JMdict](https://www.edrdg.org/jmdict/j_jmdict.html)、JMnedict
+  © Electronic Dictionary Research and Development Group — [CC BY-SA 4.0](https://www.edrdg.org/edrdg/licence.html)。
+  これらから生成した `data/kanji-data.js` も同ライセンスに従います。
+- 作品名・キャラクター名は各権利者に帰属します。本アプリは学習目的で名称を引用しており、各作品とは関係ありません。

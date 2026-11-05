@@ -1,0 +1,17 @@
+{
+  "name": "アニ漢 — アニメ漢字テスト",
+  "short_name": "アニ漢",
+  "description": "アニメのタイトルやキャラクター名によく使われる漢字1万字を、Apple Pencilの手書きで覚える漢字テスト",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f4f3fa",
+  "theme_color": "#1d1b3a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
