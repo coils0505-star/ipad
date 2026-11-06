@@ -53,34 +53,69 @@ export function save(immediate = false) {
   clearTimeout(saveTimer);
   const doSave = () => {
     try {
+      state.savedAt = Date.now();
       localStorage.setItem(KEY, JSON.stringify(state));
+      window.dispatchEvent(new CustomEvent('anikan:saved'));
     } catch (e) {
       console.warn('save failed', e);
+      window.dispatchEvent(new CustomEvent('anikan:savefail'));
     }
   };
   if (immediate) doSave();
   else saveTimer = setTimeout(doSave, 300);
 }
 
+// 現在の学習状況のコピー（スロット保存・セーブコード用）
+export function snapshot() {
+  return JSON.parse(JSON.stringify(state));
+}
+
+// セーブデータとして正しい形か確認し、足りない項目を補って返す
+export function validate(data) {
+  if (!data || data.v !== 1 || typeof data.srs !== 'object' || typeof data.cleared !== 'object') {
+    throw new Error('アニ漢のセーブデータではありません');
+  }
+  return { ...freshState(), ...data, settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) } };
+}
+
+export function replaceState(data) {
+  const prevBackup = state && state.lastBackup;
+  state = validate(JSON.parse(JSON.stringify(data)));
+  if (!state.lastBackup && prevBackup) state.lastBackup = prevBackup;
+  save(true);
+  return state;
+}
+
 export function exportJSON() {
   return JSON.stringify({ app: 'anikan', exported: new Date().toISOString(), data: state });
 }
 
-export function importJSON(text) {
-  const obj = JSON.parse(text);
-  const data = obj && obj.app === 'anikan' ? obj.data : obj;
-  if (!data || data.v !== 1 || typeof data.srs !== 'object') {
-    throw new Error('アニ漢のバックアップファイルではありません');
+// バックアップファイル（JSON）の中身を取り出す
+export function parseJSON(text) {
+  let obj;
+  try {
+    obj = JSON.parse(text);
+  } catch (e) {
+    throw new Error('ファイルの形式が正しくありません');
   }
-  state = { ...freshState(), ...data, settings: { ...DEFAULT_SETTINGS, ...(data.settings || {}) } };
+  const data = obj && obj.app === 'anikan' ? obj.data : obj;
+  return validate(data);
+}
+
+export function importJSON(text) {
+  return replaceState(parseJSON(text));
+}
+
+export function markBackup() {
+  state.lastBackup = Date.now();
   save(true);
-  return state;
 }
 
 export function reset() {
   const settings = state ? state.settings : { ...DEFAULT_SETTINGS };
   state = freshState();
   state.settings = settings;
+  state.seenIntro = true;
   save(true);
   return state;
 }

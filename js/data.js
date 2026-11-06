@@ -51,6 +51,68 @@ export function rankLabel(r) {
   return `ランク${r}「${RANK_NAMES[r - 1]}」`;
 }
 
+/* ---------------- レベル（昇格の単位） ----------------
+ * ランク1〜3は200字ごとのサブランク（1-1〜1-5 など）に細分化し、
+ * ランク4以降は1000字で1レベル。各レベルの昇格試験に合格すると次のレベルへ進める。 */
+export const SUB_RANKS = 3;
+export const SUB_SIZE = 200;
+const SUB_NUMERALS = ['壱', '弐', '参', '肆', '伍', '陸', '漆', '捌', '玖', '拾'];
+
+export const LEVELS = [];
+for (let r = 1; r <= RANKS; r++) {
+  const rankStart = (r - 1) * PER_RANK;
+  const rankSize = Math.min(PER_RANK, TOTAL - rankStart);
+  if (r <= SUB_RANKS) {
+    const n = Math.ceil(rankSize / SUB_SIZE);
+    for (let s = 1; s <= n; s++) {
+      const start = rankStart + (s - 1) * SUB_SIZE;
+      LEVELS.push({ key: `${r}-${s}`, rank: r, sub: s, subCount: n, start, size: Math.min(SUB_SIZE, rankStart + rankSize - start), name: `${RANK_NAMES[r - 1]}・${SUB_NUMERALS[s - 1]}` });
+    }
+  } else {
+    LEVELS.push({ key: String(r), rank: r, sub: 0, subCount: 0, start: rankStart, size: rankSize, name: RANK_NAMES[r - 1] });
+  }
+}
+LEVELS.forEach((L, i) => {
+  L.idx = i;
+  L.firstStage = L.start / PER_STAGE;
+  L.stages = Math.ceil(L.size / PER_STAGE);
+});
+const LEVEL_BY_KEY = new Map(LEVELS.map((L) => [L.key, L]));
+
+export function levelByKey(key) {
+  return LEVEL_BY_KEY.get(String(key)) || null;
+}
+
+export function levelOfStage(g) {
+  const i = g * PER_STAGE;
+  for (const L of LEVELS) if (i >= L.start && i < L.start + L.size) return L;
+  return LEVELS[LEVELS.length - 1];
+}
+
+export function levelOfIndex(i) {
+  return levelOfStage(stageOfIndex(i));
+}
+
+export function levelsOfRank(r) {
+  return LEVELS.filter((L) => L.rank === r);
+}
+
+export function levelChars(L) {
+  return KANJI.slice(L.start, L.start + L.size).map((e) => e.k);
+}
+
+export function levelLabel(L) {
+  return `ランク${L.key}「${L.name}」`;
+}
+
+export function levelRange(L) {
+  return `${L.start + 1}〜${L.start + L.size}字目`;
+}
+
+export function stageNoInLevel(g) {
+  return g - levelOfStage(g).firstStage + 1;
+}
+
 // 訓読み表記 "あつ.い" → "あつ(い)"、接頭・接尾の "-" → "〜"
 export function fmtKun(r) {
   let s = r.replace(/\./, '(');

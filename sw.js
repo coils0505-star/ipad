@@ -1,5 +1,5 @@
 // オフライン用キャッシュ（手書き認識の通信はキャッシュしません）
-const VERSION = 'anikan-v1';
+const VERSION = 'anikan-v2';
 const ASSETS = [
   './',
   'index.html',
@@ -10,6 +10,8 @@ const ASSETS = [
   'js/recognize.js',
   'js/srs.js',
   'js/store.js',
+  'js/slots.js',
+  'js/savedata.js',
   'data/kanji-data.js',
   'manifest.webmanifest',
   'icons/icon-180.png',

@@ -733,3 +733,84 @@ a { color: var(--primary); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ------------------------------ サブランク（ランク1〜3の200字ごと） ------------------------------ */
+.rank-emblem.has-sub { display: flex; align-items: baseline; justify-content: center; gap: 0; }
+.rank-emblem.has-sub small { font-size: 18px; font-weight: 700; opacity: 0.9; }
+.rank-tag { display: inline-block; margin-left: 8px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--primary-soft); color: var(--primary); vertical-align: 2px; }
+.sub-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px; }
+.sub-chip { font-size: 12px; font-weight: 700; padding: 1px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: var(--surface); }
+.sub-chip.passed { background: var(--good-soft); color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--line)); }
+.sub-chip.passed::before { content: "✓ "; }
+.sub-chip.open { background: var(--primary-soft); color: var(--primary); border-color: var(--primary); }
+.sub-chip.locked { opacity: 0.55; }
+.pill.passed { background: var(--good-soft); color: var(--good); padding: 6px 14px; }
+.level-sec { padding: 16px; }
+.level-sec.locked .stage-grid, .level-sec.locked .level-info { opacity: 0.55; }
+.level-head { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; flex-wrap: wrap; }
+.level-badge {
+  flex: none;
+  min-width: 58px; height: 46px;
+  padding: 0 10px;
+  border-radius: 14px;
+  display: grid; place-items: center;
+  font-weight: 800; font-size: 20px; color: #fff;
+  background: linear-gradient(140deg, var(--h1), var(--h2));
+}
+.level-badge.r1 { --h1: #6fcf97; --h2: #27ae60; }
+.level-badge.r2 { --h1: #56ccf2; --h2: #2f80ed; }
+.level-badge.r3 { --h1: #7f8cff; --h2: #4b4fd1; }
+.level-info { flex: 1; min-width: 200px; }
+.level-info .meter { margin: 6px 0 0; }
+.level-title { font-weight: 800; font-size: 18px; }
+.level-actions { display: flex; gap: 8px; align-items: center; }
+
+/* ------------------------------ セーブ ------------------------------ */
+.save-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 6px 12px;
+  font-size: 14px; font-weight: 700;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+.save-btn svg, .save-icon svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+.save-btn.saved { background: var(--good-soft); color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--line)); }
+.save-head { display: flex; gap: 14px; align-items: center; margin-bottom: 14px; }
+.save-icon { flex: none; width: 56px; height: 56px; border-radius: 16px; display: grid; place-items: center; color: #fff; background: linear-gradient(140deg, var(--primary), var(--accent)); }
+.save-icon svg { width: 30px; height: 30px; }
+.save-title { font-size: 19px; }
+.save-tiles { margin-bottom: 8px; }
+.save-tiles .tile { box-shadow: none; background: var(--surface-2); }
+.slots { display: grid; gap: 10px; }
+.slot { display: flex; align-items: center; gap: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; flex-wrap: wrap; }
+.slot.empty { border-style: dashed; }
+.slot-no { flex: none; min-width: 120px; font-weight: 800; }
+.slot-info { flex: 1; min-width: 200px; }
+.slot-sum { font-weight: 600; }
+.slot-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.transfer { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.transfer-box { background: var(--surface-2); border-radius: 14px; padding: 14px 16px; }
+.transfer-box h4 { margin: 0 0 4px; font-size: 16px; }
+.transfer-box .btn-row { margin-top: 8px; }
+.code-box {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--surface);
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  resize: vertical;
+  color: var(--ink-2);
+}
+.paste-code h3 { margin-top: 0; }
+.backup-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-color: color-mix(in srgb, var(--warn, #c98500) 45%, var(--line)); }
+.backup-notice p { margin: 2px 0 0; }
+@media (max-width: 520px) { .save-btn span { display: none; } }
+.rank-emblem.has-sub { font-family: var(--font); font-size: 26px; }
+.rank-emblem.has-sub small { font-size: 17px; }
+.level-sec { scroll-margin-top: calc(env(safe-area-inset-top) + 76px); }

@@ -3,6 +3,8 @@ import * as srs from './srs.js';
 import * as K from './data.js';
 import { InkPad } from './ink.js';
 import { recognize, judge, isDown } from './recognize.js';
+import * as slots from './slots.js';
+import * as savedata from './savedata.js';
 
 const PASS = 90;
 const DAY = 86400000;
@@ -20,38 +22,94 @@ let alertShown = false;
 /* ------------------------------------------------------------------ */
 /* 進行状況                                                             */
 /* ------------------------------------------------------------------ */
+// 昇格の単位は「レベル」: ランク1〜3は200字ごと（1-1〜3-5）、ランク4以降は1000字ごと。
+// S.exams のキーはレベルのキー（"1-2" や "4"）。ランク1〜3のランク番号キー（"1"〜"3"）は
+// 1000字まとめての飛び級試験で、合格するとそのランクの全サブランクが合格扱いになる。
 const bestOf = (g) => S.cleared[g] ?? null;
 const isCleared = (g) => (S.cleared[g] ?? -1) >= PASS;
-const rankPassed = (r) => (S.exams[r] ?? -1) >= PASS;
-const rankOpen = (r) => r === 1 || rankPassed(r - 1);
-const stageGlobal = (r, n) => (r - 1) * K.STAGES_PER_RANK + (n - 1);
+const examPassed = (key) => (S.exams[key] ?? -1) >= PASS;
 
-function stageOpen(g) {
-  const r = K.stageRank(g);
-  if (!rankOpen(r)) return false;
-  return K.stageNo(g) === 1 || isCleared(g - 1);
+function levelPassed(L) {
+  return examPassed(L.key) || (L.sub > 0 && examPassed(String(L.rank)));
 }
 
-function clearedCount(r) {
+function levelOpen(L) {
+  return L.idx === 0 || levelPassed(K.LEVELS[L.idx - 1]);
+}
+
+function rankOpen(r) {
+  return levelOpen(K.levelsOfRank(r)[0]);
+}
+
+function rankPassed(r) {
+  const ls = K.levelsOfRank(r);
+  return levelPassed(ls[ls.length - 1]);
+}
+
+function stageOpen(g) {
+  const L = K.levelOfStage(g);
+  if (!levelOpen(L)) return false;
+  return g === L.firstStage || isCleared(g - 1);
+}
+
+function clearedInLevel(L) {
   let n = 0;
-  for (let i = 1; i <= K.STAGES_PER_RANK; i++) if (isCleared(stageGlobal(r, i))) n++;
+  for (let g = L.firstStage; g < L.firstStage + L.stages; g++) if (isCleared(g)) n++;
   return n;
 }
 
-function topRank() {
-  let r = 1;
-  while (r < K.RANKS && rankOpen(r + 1)) r++;
-  return r;
+function clearedCount(r) {
+  return K.levelsOfRank(r).reduce((a, L) => a + clearedInLevel(L), 0);
+}
+
+function topLevel() {
+  let i = 0;
+  while (i < K.LEVELS.length - 1 && levelOpen(K.LEVELS[i + 1])) i++;
+  return K.LEVELS[i];
 }
 
 function frontier() {
-  const r = topRank();
-  for (let i = 1; i <= K.STAGES_PER_RANK; i++) {
-    const g = stageGlobal(r, i);
-    if (stageOpen(g) && !isCleared(g)) return { type: 'stage', g, r };
+  const L = topLevel();
+  for (let g = L.firstStage; g < L.firstStage + L.stages; g++) {
+    if (stageOpen(g) && !isCleared(g)) return { type: 'stage', g, L };
   }
-  if (!rankPassed(r)) return { type: 'exam', r };
-  return { type: 'done', r };
+  if (!levelPassed(L)) return { type: 'exam', L };
+  return { type: 'done', L };
+}
+
+// 昇格試験の内容（key = レベルのキー、またはランク1〜3のまとめ飛び級ならランク番号）
+function examSpec(key) {
+  key = String(key);
+  const L = K.levelByKey(key);
+  if (L) {
+    const all = clearedInLevel(L) === L.stages;
+    const name = all || levelPassed(L) ? '昇格試験' : '飛び級試験';
+    return {
+      key, L, rank: L.rank, chars: K.levelChars(L), size: L.size, name,
+      title: `ランク${L.key} ${name}`, label: K.levelLabel(L),
+      next: K.LEVELS[L.idx + 1] || null, open: levelOpen(L),
+    };
+  }
+  const r = Number(key);
+  const ls = K.levelsOfRank(r);
+  const last = ls[ls.length - 1];
+  return {
+    key, L: null, rank: r, chars: K.rankChars(r), size: K.rankChars(r).length, name: 'まとめて飛び級試験',
+    title: `ランク${r} まとめて飛び級試験`, label: K.rankLabel(r),
+    next: K.LEVELS[last.idx + 1] || null, open: rankOpen(r),
+  };
+}
+
+function summaryOf(state = S) {
+  const learned = Object.keys(state.srs || {}).length;
+  const stages = Object.values(state.cleared || {}).filter((v) => v >= PASS).length;
+  let top = K.LEVELS[0];
+  const passed = (key) => ((state.exams || {})[key] ?? -1) >= PASS;
+  for (const L of K.LEVELS.slice(1)) {
+    const prev = K.LEVELS[L.idx - 1];
+    if (passed(prev.key) || (prev.sub > 0 && passed(String(prev.rank)))) top = L; else break;
+  }
+  return { learned, stages, level: top.key, levelName: top.name };
 }
 
 /* ------------------------------------------------------------------ */
@@ -82,10 +140,12 @@ function render() {
   const { name, params } = current();
   const app = $('#app');
   app.dataset.view = name;
-  const tab = TABS.includes(name) ? name : ({ rank: 'ranks', stage: 'ranks', quiz: null, result: null }[name] ?? null);
+  const tab = TABS.includes(name) ? name : ({ rank: 'ranks', stage: 'ranks', quiz: null, result: null, save: null }[name] ?? null);
   document.querySelectorAll('#tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
   $('#btn-back').hidden = stack.length <= 1 && name !== 'quiz';
-  $('#topbar-right').innerHTML = '';
+  $('#topbar-right').innerHTML = name === 'quiz' || name === 'save'
+    ? ''
+    : `<button class="save-btn" data-top="save" aria-label="セーブ画面を開く">${SAVE_SVG}<span>セーブ</span></button>`;
   view.scrollTop = 0;
   window.scrollTo(0, 0);
   const fn = VIEWS[name];
@@ -412,7 +472,7 @@ function showKanji(ch) {
       <div class="kdetail-head">
         <div class="kdetail-k">${esc(ch)}</div>
         <div class="kdetail-meta">
-          <div class="kdetail-rank">${esc(K.rankLabel(K.rankOfIndex(i)))}・ステージ${K.stageNo(g)}・No.${i + 1}</div>
+          <div class="kdetail-rank">${esc(K.levelLabel(K.levelOfStage(g)))}・ステージ${K.stageNoInLevel(g)}・No.${i + 1}</div>
           ${readingsHTML(e)}
           <div class="kdetail-tags">
             ${e.b ? `<span class="tag">部首 ${esc(e.b)}</span>` : ''}
@@ -470,15 +530,17 @@ function viewHome() {
   setTitle('アニ漢');
   const sum = srs.summary();
   const f = frontier();
-  const r = topRank();
-  const cc = clearedCount(r);
+  const L = f.L;
+  const r = L.rank;
+  const cc = clearedInLevel(L);
   const next = srs.nextDue();
   const today = S.days[store.dayKey()] || { n: 0, ok: 0 };
   let cta = '';
   if (f.type === 'stage') {
-    cta = `<button class="btn primary big" data-act="stage" data-g="${f.g}">ステージ${K.stageNo(f.g)}に挑戦<small>${esc(K.stageChars(f.g).join(''))}</small></button>`;
+    cta = `<button class="btn primary big" data-act="stage" data-g="${f.g}">ステージ${K.stageNoInLevel(f.g)}に挑戦<small>${esc(K.stageChars(f.g).join(''))}</small></button>`;
   } else if (f.type === 'exam') {
-    cta = `<button class="btn primary big" data-act="exam" data-r="${f.r}">昇格試験に挑戦<small>20問・90点以上でランク${f.r + 1}へ</small></button>`;
+    const nx = K.LEVELS[L.idx + 1];
+    cta = `<button class="btn primary big" data-act="exam" data-key="${L.key}">昇格試験に挑戦<small>20問・90点以上で${nx ? `ランク${nx.key}へ` : '全ランク制覇'}</small></button>`;
   } else {
     cta = '<div class="done-msg">全ランク制覇！復習で記憶をキープしましょう。</div>';
   }
@@ -494,17 +556,19 @@ function viewHome() {
   view.innerHTML = `
     <section class="hero card">
       <div class="hero-rank">
-        <div class="rank-emblem r${r}">${r}</div>
+        <div class="rank-emblem r${r} ${L.sub ? 'has-sub' : ''}">${L.sub ? `<span>${r}</span><small>-${L.sub}</small>` : r}</div>
         <div>
-          <div class="hero-label">現在のランク</div>
-          <div class="hero-name">${esc(K.RANK_NAMES[r - 1])}</div>
-          <div class="hero-sub">${(r - 1) * K.PER_RANK + 1}〜${r * K.PER_RANK}字目・ステージ ${cc}/${K.STAGES_PER_RANK} クリア</div>
+          <div class="hero-label">現在のランク ${esc(L.key)}</div>
+          <div class="hero-name">${esc(L.name)}</div>
+          <div class="hero-sub">${K.levelRange(L)}・ステージ ${cc}/${L.stages} クリア</div>
         </div>
       </div>
-      ${bar((cc / K.STAGES_PER_RANK) * 100)}
+      ${bar((cc / L.stages) * 100)}
+      ${L.sub ? `<div class="sub-chips">${K.levelsOfRank(r).map((x) => `<span class="sub-chip ${levelPassed(x) ? 'passed' : levelOpen(x) ? 'open' : 'locked'}">${x.key}</span>`).join('')}</div>` : ''}
       <div class="hero-cta">${cta}</div>
     </section>
     ${dueBox}
+    ${backupNotice(sum)}
     <section class="tiles">
       <div class="tile"><span class="tile-lbl">学習した漢字</span><span class="tile-val">${sum.learned.toLocaleString()}<small>/ ${K.TOTAL.toLocaleString()}</small></span></div>
       <div class="tile"><span class="tile-lbl">定着した漢字</span><span class="tile-val">${sum.master.toLocaleString()}</span></div>
@@ -521,8 +585,9 @@ function viewHome() {
       <ol>
         <li><b>学習</b> — ステージの10字を見て覚える</li>
         <li><b>テスト</b> — Apple Pencil で書いて解答。<b>100点中90点以上</b>で次のステージへ</li>
-        <li><b>昇格試験</b> — 100ステージ（1000字）クリア後、20問で90点以上なら次のランクへ</li>
+        <li><b>昇格試験</b> — ランク1〜3は200字（20ステージ）ごと、ランク4以降は1000字（100ステージ）ごと。20問で90点以上なら次のランクへ</li>
         <li><b>復習</b> — 忘却曲線に沿って、忘れかけた字が自動で出題されます</li>
+        <li><b>セーブ</b> — 学習状況は自動でセーブ。右上の「セーブ」からスロット保存・ファイル書き出し・セーブコードで引き継ぎ</li>
       </ol>
     </section>`;
   bindBarTips(view);
@@ -543,7 +608,7 @@ function showIntro() {
     <h2>アニ漢へようこそ</h2>
     <p>アニメのタイトルやキャラクター名によく使われる漢字を、<b>1万字</b>収録した書き取りテストです。</p>
     <ul>
-      <li>1000字ごとに<b>10ランク</b>、各ランク100ステージ</li>
+      <li>1000字ごとに<b>10ランク</b>。ランク1〜3は<b>200字ごと</b>の5段階に細分化</li>
       <li>テストは<b>100点満点・90点以上で合格</b></li>
       <li><b>忘却曲線</b>に沿って最適なタイミングで復習を出題</li>
       <li>解答は <b>Apple Pencil</b>（指でもOK）で手書き</li>
@@ -576,29 +641,35 @@ function viewRanks() {
   let html = '<div class="rank-list">';
   for (let r = 1; r <= K.RANKS; r++) {
     const open = rankOpen(r);
+    const ls = K.levelsOfRank(r);
+    const total = ls.reduce((a, L) => a + L.stages, 0);
     const cc = clearedCount(r);
-    const ex = S.exams[r];
+    let status;
+    if (ls.length > 1) {
+      const np = ls.filter(levelPassed).length;
+      status = `ステージ ${cc}/${total}・サブランク ${np}/${ls.length} 合格
+        <div class="sub-chips">${ls.map((L) => `<span class="sub-chip ${levelPassed(L) ? 'passed' : levelOpen(L) ? 'open' : 'locked'}">${L.key}</span>`).join('')}</div>`;
+    } else {
+      const ex = S.exams[String(r)];
+      status = `ステージ ${cc}/${total}${rankPassed(r) ? `・<b class="good">昇格試験 合格 ${ex}点</b>` : ex != null ? `・昇格試験 最高${ex}点` : ''}`;
+    }
     html += `<button class="rank-item card ${open ? '' : 'locked'}" data-act="rank" data-r="${r}">
       <div class="rank-emblem r${r}">${open ? r : '🔒'}</div>
       <div class="rank-info">
-        <div class="rank-title">ランク${r}「${esc(K.RANK_NAMES[r - 1])}」</div>
-        <div class="rank-sub">${(r - 1) * K.PER_RANK + 1}〜${r * K.PER_RANK}字目 <span class="rank-sample">${esc(K.rankChars(r).slice(0, 12).join(''))}…</span></div>
-        ${bar((cc / K.STAGES_PER_RANK) * 100)}
-        <div class="rank-sub">ステージ ${cc}/${K.STAGES_PER_RANK}${rankPassed(r) ? '・<b class="good">昇格試験 合格 ' + ex + '点</b>' : ex != null ? `・昇格試験 最高${ex}点` : ''}</div>
+        <div class="rank-title">ランク${r}「${esc(K.RANK_NAMES[r - 1])}」${ls.length > 1 ? `<span class="rank-tag">200字×${ls.length}段階</span>` : ''}</div>
+        <div class="rank-sub">${(r - 1) * K.PER_RANK + 1}〜${(r - 1) * K.PER_RANK + total * K.PER_STAGE}字目 <span class="rank-sample">${esc(K.rankChars(r).slice(0, 12).join(''))}…</span></div>
+        ${bar((cc / total) * 100)}
+        <div class="rank-sub">${status}</div>
       </div></button>`;
   }
   html += '</div>';
   view.innerHTML = html;
 }
 
-function viewRank({ r }) {
-  setTitle(`ランク${r}「${K.RANK_NAMES[r - 1]}」`);
-  const open = rankOpen(r);
-  const cc = clearedCount(r);
-  const all = cc === K.STAGES_PER_RANK;
+function stageCells(L) {
   let cells = '';
-  for (let n = 1; n <= K.STAGES_PER_RANK; n++) {
-    const g = stageGlobal(r, n);
+  for (let n = 1; n <= L.stages; n++) {
+    const g = L.firstStage + n - 1;
     const so = stageOpen(g);
     const b = bestOf(g);
     const cl = isCleared(g);
@@ -607,34 +678,84 @@ function viewRank({ r }) {
       <span class="stage-k">${esc(K.stageChars(g).slice(0, 3).join(''))}</span>
       <span class="stage-score">${cl ? '★' + b : b != null ? b + '点' : so ? '挑戦' : ''}</span></button>`;
   }
-  const examBtn = open
-    ? `<button class="btn ${all ? 'primary' : 'ghost'}" data-act="exam" data-r="${r}">${all ? '昇格試験' : '飛び級試験'}（20問）</button>`
-    : '';
+  return `<div class="stage-grid">${cells}</div>`;
+}
+
+function levelExamButton(L, cls = '') {
+  if (!levelOpen(L)) return '';
+  if (levelPassed(L)) {
+    const ex = S.exams[L.key];
+    return `<span class="pill passed">合格${ex != null ? ` ${ex}点` : ''}</span>`;
+  }
+  const all = clearedInLevel(L) === L.stages;
+  return `<button class="btn ${all ? 'primary' : 'ghost'} ${cls}" data-act="exam" data-key="${L.key}">${all ? '昇格試験' : '飛び級試験'}（20問）</button>`;
+}
+
+function viewRank({ r, focus }) {
+  setTitle(K.rankLabel(r));
+  const ls = K.levelsOfRank(r);
+  const open = rankOpen(r);
+  const cc = clearedCount(r);
+  const total = ls.reduce((a, L) => a + L.stages, 0);
+  const prevLabel = r > 1 ? `ランク${K.levelsOfRank(r - 1).slice(-1)[0].key}` : '';
+  let head;
+  let body;
+  if (ls.length === 1) {
+    const L = ls[0];
+    head = levelExamButton(L);
+    body = `${open && !levelPassed(L) && clearedInLevel(L) < L.stages ? '<p class="muted small center">「飛び級試験」はこのランク1000字からの20問。90点以上で次のランクが開放されます。</p>' : ''}
+      ${stageCells(L)}`;
+  } else {
+    head = open && !rankPassed(r)
+      ? `<button class="btn ghost" data-act="exam" data-key="${r}">まとめて飛び級（1000字から20問）</button>`
+      : rankPassed(r) ? '<span class="pill passed">全段階 合格</span>' : '';
+    body = `<p class="muted small center">ランク${r}は200字ずつ5段階。各段階の20ステージをクリアして昇格試験（20問・90点以上）に合格すると次の段階へ進めます。</p>
+      ${ls.map((L) => {
+        const lo = levelOpen(L);
+        const cl = clearedInLevel(L);
+        return `<section class="card level-sec ${lo ? '' : 'locked'} ${levelPassed(L) ? 'passed' : ''}" id="lv-${L.key}">
+          <div class="level-head">
+            <div class="level-badge r${r}">${L.key}</div>
+            <div class="level-info">
+              <div class="level-title">${esc(L.name)}</div>
+              <div class="rank-sub">${K.levelRange(L)}・ステージ ${cl}/${L.stages} クリア</div>
+              ${bar((cl / L.stages) * 100)}
+            </div>
+            <div class="level-actions">${levelExamButton(L)}</div>
+          </div>
+          ${!lo ? `<p class="muted small">ランク${K.LEVELS[L.idx - 1].key}の昇格試験に合格すると挑戦できます。</p>` : ''}
+          ${stageCells(L)}
+        </section>`;
+      }).join('')}`;
+  }
   view.innerHTML = `
     <section class="card rank-head">
       <div class="rank-emblem r${r}">${r}</div>
       <div class="rank-info">
-        <div class="rank-sub">${(r - 1) * K.PER_RANK + 1}〜${r * K.PER_RANK}字目</div>
-        ${bar((cc / K.STAGES_PER_RANK) * 100)}
-        <div class="rank-sub">ステージ ${cc}/${K.STAGES_PER_RANK} クリア${rankPassed(r) ? '・<b class="good">昇格済み</b>' : ''}</div>
+        <div class="rank-sub">${(r - 1) * K.PER_RANK + 1}〜${(r - 1) * K.PER_RANK + total * K.PER_STAGE}字目</div>
+        ${bar((cc / total) * 100)}
+        <div class="rank-sub">ステージ ${cc}/${total} クリア${rankPassed(r) ? '・<b class="good">昇格済み</b>' : ''}</div>
       </div>
-      <div class="rank-actions">${examBtn}</div>
+      <div class="rank-actions">${head}</div>
     </section>
-    ${!open ? `<p class="notice">ランク${r - 1}の昇格試験に合格すると挑戦できます。</p>` : ''}
-    ${open && !all ? '<p class="muted small center">「飛び級試験」はこのランク1000字からの20問。90点以上で次のランクが開放されます。</p>' : ''}
-    <div class="stage-grid">${cells}</div>`;
+    ${!open ? `<p class="notice">${prevLabel}の昇格試験に合格すると挑戦できます。</p>` : ''}
+    ${body}`;
+  if (focus) {
+    const el = document.getElementById(`lv-${focus}`);
+    if (el && ls.length > 1) requestAnimationFrame(() => el.scrollIntoView({ block: 'start' }));
+  }
 }
 
 function viewStage({ g }) {
-  const r = K.stageRank(g);
-  const n = K.stageNo(g);
-  setTitle(`ランク${r} ステージ${n}`);
+  const L = K.levelOfStage(g);
+  const n = K.stageNoInLevel(g);
+  setTitle(`ランク${L.key} ステージ${n}`);
   const chars = K.stageChars(g);
   const b = bestOf(g);
   view.innerHTML = `
     <section class="card stage-head">
       <div>
-        <div class="stage-title">ステージ${n}<small>${esc(K.rankLabel(r))}</small></div>
+        <div class="stage-title">ステージ${n}<small>${esc(K.levelLabel(L))}・全${L.stages}ステージ</small></div>
         <div class="muted">${b != null ? `最高 <b>${b}点</b>${isCleared(g) ? '（合格）' : ''}` : 'まずは10字を確認してからテストに挑戦しましょう'}</div>
       </div>
       <button class="btn primary big" data-act="start-stage" data-g="${g}" ${stageOpen(g) || isCleared(g) ? '' : 'disabled'}>テスト開始<small>10問・90点以上で合格</small></button>
@@ -718,13 +839,13 @@ function downloadICS() {
 /* ------------------------------------------------------------------ */
 /* 画面: 図鑑                                                           */
 /* ------------------------------------------------------------------ */
-let dictRank = 1;
+let dictLevel = 0;
 let dictQuery = '';
 
 function viewDict() {
   setTitle('漢字図鑑');
-  const chips = Array.from({ length: K.RANKS }, (_, i) => i + 1)
-    .map((r) => `<button class="chip ${r === dictRank && !dictQuery ? 'active' : ''}" data-act="dict-rank" data-r="${r}">ランク${r}</button>`).join('');
+  const chips = K.LEVELS
+    .map((L) => `<button class="chip ${L.idx === dictLevel && !dictQuery ? 'active' : ''}" data-act="dict-rank" data-l="${L.idx}">ランク${L.key}</button>`).join('');
   view.innerHTML = `
     <div class="dict-tools">
       <input type="search" id="dict-q" placeholder="漢字・よみ（ひらがな/カタカナ）・英語で検索" value="${esc(dictQuery)}" autocomplete="off">
@@ -740,9 +861,11 @@ function viewDict() {
   let t;
   input.addEventListener('input', () => {
     clearTimeout(t);
-    t = setTimeout(() => { dictQuery = input.value; renderDictBody(); view.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', !dictQuery && Number(c.dataset.r) === dictRank)); }, 200);
+    t = setTimeout(() => { dictQuery = input.value; renderDictBody(); view.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', !dictQuery && Number(c.dataset.l) === dictLevel)); }, 200);
   });
   renderDictBody();
+  const active = view.querySelector('.chip.active');
+  if (active) active.scrollIntoView({ inline: 'center', block: 'nearest' });
 }
 
 function renderDictBody() {
@@ -755,10 +878,10 @@ function renderDictBody() {
     idxs = K.searchKanji(dictQuery);
     head = `<p class="muted">「${esc(dictQuery)}」の検索結果 ${idxs.length}字${idxs.length >= 300 ? '（先頭300字）' : ''}</p>`;
   } else {
-    const start = (dictRank - 1) * K.PER_RANK;
-    idxs = Array.from({ length: K.PER_RANK }, (_, i) => start + i).filter((i) => i < K.TOTAL);
+    const L = K.LEVELS[dictLevel];
+    idxs = Array.from({ length: L.size }, (_, i) => L.start + i);
     const learned = idxs.filter((i) => S.srs[K.KANJI[i].k]).length;
-    head = `<p class="muted">${esc(K.rankLabel(dictRank))}：${learned}/${idxs.length}字 学習済み</p>`;
+    head = `<p class="muted">${esc(K.levelLabel(L))}（${K.levelRange(L)}）：${learned}/${idxs.length}字 学習済み</p>`;
   }
   body.innerHTML = head + `<div class="dict-grid">${idxs.map((i) => {
     const ch = K.KANJI[i].k;
@@ -798,17 +921,13 @@ function viewSettings() {
       <div class="set-test"><div class="set-lbl">試し書き</div><div class="set-pad"></div><button class="btn ghost small" id="pad-clear">消す</button></div>
     </section>
     <section class="card settings">
-      <h3>データ</h3>
-      <p class="muted small">学習データはこの端末のブラウザ内に保存されます。機種変更や念のためにバックアップを取っておきましょう。</p>
-      <div class="btn-row left">
-        <button class="btn ghost" id="exp">バックアップを書き出す</button>
-        <label class="btn ghost file-btn">バックアップから復元<input type="file" id="imp" accept="application/json,.json" hidden></label>
-        <button class="btn danger" id="rst">学習データをリセット</button>
-      </div>
+      <h3>学習データ</h3>
+      <p class="muted small">学習状況は自動でセーブされます。セーブスロットへの保存、ファイルへの書き出し、別の端末への引き継ぎは「セーブ」画面から行えます。</p>
+      <div class="btn-row left"><button class="btn primary" id="go-save">セーブ画面を開く</button></div>
     </section>
     <section class="card about">
       <h3>このアプリについて</h3>
-      <p class="small muted">収録 ${K.TOTAL.toLocaleString()}字（${K.RANKS}ランク × ${K.PER_RANK}字、各ランク${K.STAGES_PER_RANK}ステージ）。並び順はアニメのタイトル・キャラクター名・頻出語での出現と、一般語・人名での使用頻度から算出しています。</p>
+      <p class="small muted">収録 ${K.TOTAL.toLocaleString()}字（${K.RANKS}ランク × ${K.PER_RANK}字。ランク1〜${K.SUB_RANKS}は${K.SUB_SIZE}字ごとの${K.PER_RANK / K.SUB_SIZE}段階に細分化）。並び順はアニメのタイトル・キャラクター名・頻出語での出現と、一般語・人名での使用頻度から算出しています。</p>
       <p class="small muted">漢字・単語・人名データ: <a href="https://www.edrdg.org/wiki/index.php/KANJIDIC_Project" target="_blank" rel="noopener">KANJIDIC2</a> / <a href="https://www.edrdg.org/jmdict/j_jmdict.html" target="_blank" rel="noopener">JMdict</a> / JMnedict © Electronic Dictionary Research and Development Group（<a href="https://www.edrdg.org/edrdg/licence.html" target="_blank" rel="noopener">CC BY-SA 4.0</a>）。作品名・人名は各権利者に帰属します。</p>
     </section>`;
 
@@ -829,35 +948,275 @@ function viewSettings() {
   };
   mountTestPad();
   $('#pad-clear').addEventListener('click', () => pad && pad.clear());
-  $('#exp').addEventListener('click', () => {
-    const blob = new Blob([store.exportJSON()], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `anikan-backup-${store.dayKey()}.json`;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  $('#go-save').addEventListener('click', () => go('save'));
+}
+
+/* ------------------------------------------------------------------ */
+/* 画面: セーブ                                                         */
+/* ------------------------------------------------------------------ */
+const SLOT_IDS = ['slot1', 'slot2', 'slot3'];
+
+function backupNotice(sum) {
+  if (sum.learned < 20) return '';
+  const last = S.lastBackup;
+  if (last && Date.now() - last < 7 * DAY) return '';
+  const days = last ? Math.floor((Date.now() - last) / DAY) : null;
+  return `<div class="card backup-notice">
+    <div><b>${days == null ? 'まだバックアップがありません' : `最後のバックアップから${days}日`}</b>
+    <p class="muted small">iPad の故障や Safari のデータ削除に備えて、セーブデータをファイルに書き出しておきましょう。</p></div>
+    <button class="btn ghost" data-act="save">セーブ画面へ</button></div>`;
+}
+
+function summaryLine(sm) {
+  return `ランク${esc(sm.level)}「${esc(sm.levelName)}」・学習 ${sm.learned.toLocaleString()}字・クリア ${sm.stages}ステージ`;
+}
+
+function isStandalone() {
+  return window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+}
+
+async function viewSave() {
+  setTitle('セーブ');
+  const sm = summaryOf();
+  const sum = srs.summary();
+  const savedAt = S.savedAt;
+  let persisted = null;
+  try { persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : null; } catch (e) { /* noop */ }
+  if (current().name !== 'save') return;
+  view.innerHTML = `
+    <section class="card save-main">
+      <div class="save-head">
+        <div class="save-icon" aria-hidden="true">${SAVE_SVG}</div>
+        <div>
+          <div class="save-title">学習状況は<b>自動セーブ</b>されています</div>
+          <div class="muted small">問題に答えるたびに、この端末に保存されます。最終セーブ: <b>${savedAt ? fmtDate(savedAt) : '—'}</b></div>
+        </div>
+      </div>
+      <div class="tiles save-tiles">
+        <div class="tile"><span class="tile-lbl">現在のランク</span><span class="tile-val">${esc(sm.level)}<small>${esc(sm.levelName)}</small></span></div>
+        <div class="tile"><span class="tile-lbl">学習した漢字</span><span class="tile-val">${sm.learned.toLocaleString()}<small>字</small></span></div>
+        <div class="tile"><span class="tile-lbl">クリアしたステージ</span><span class="tile-val">${sm.stages}</span></div>
+        <div class="tile"><span class="tile-lbl">定着した漢字</span><span class="tile-val">${sum.master.toLocaleString()}<small>字</small></span></div>
+      </div>
+      <p class="small ${persisted ? 'good' : 'muted'}">${persisted
+        ? '✓ この端末の保存領域は保護されています（自動では削除されません）。'
+        : isStandalone()
+          ? 'ホーム画面のアプリとして保存しています。念のため、ときどきファイルに書き出しておくと安心です。'
+          : '⚠ Safari のタブで開いています。Safari はしばらく使わないサイトのデータを削除することがあります。ホーム画面に追加して使うか、ファイルに書き出しておきましょう。'}</p>
+      <div class="btn-row left"><button class="btn primary" id="save-now">今すぐセーブ</button></div>
+    </section>
+
+    <section class="card">
+      <h3>セーブスロット <small>この端末に最大3つまで保存</small></h3>
+      <p class="muted small">今の学習状況をスロットに残しておき、あとでその時点に戻せます。家族で1台の iPad を使うときの切り替えにも使えます。</p>
+      <div id="slots" class="slots"><p class="muted">読み込み中…</p></div>
+    </section>
+
+    <section class="card">
+      <h3>ほかの端末・アプリに引き継ぐ</h3>
+      <p class="muted small">Safari で開いたアプリと「ホーム画面に追加」したアプリは、保存場所が別々です。買い替えや別の iPad へ移すときも、下のどちらかで引き継げます。</p>
+      <div class="transfer">
+        <div class="transfer-box">
+          <h4>ファイルで引き継ぐ</h4>
+          <p class="muted small">セーブデータ（.json）を iCloud Drive や「ファイル」アプリに保存し、引き継ぎ先で読み込みます。</p>
+          <div class="btn-row left">
+            <button class="btn ghost" id="exp-file">ファイルに書き出す</button>
+            <label class="btn ghost file-btn">ファイルから読み込む<input type="file" id="imp-file" accept="application/json,.json,text/plain,.txt" hidden></label>
+          </div>
+        </div>
+        <div class="transfer-box">
+          <h4>セーブコードで引き継ぐ</h4>
+          <p class="muted small">学習状況を1行の文字列にします。コピーしてメモや AirDrop で送り、引き継ぎ先で貼り付けます。</p>
+          <textarea id="code-out" class="code-box" readonly rows="3" placeholder="作成中…"></textarea>
+          <div class="btn-row left">
+            <button class="btn ghost" id="code-copy" disabled>セーブコードをコピー</button>
+            <button class="btn ghost" id="code-in">セーブコードを貼り付けて読み込む</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>リセット</h3>
+      <p class="muted small">すべての学習記録を消去して最初から始めます。消去前の状態は「自動バックアップ」スロットに残ります。</p>
+      <div class="btn-row left"><button class="btn danger" id="rst">学習データをリセット</button></div>
+    </section>`;
+
+  $('#save-now').addEventListener('click', () => {
+    store.save(true);
+    toast('セーブしました');
+    viewSave();
   });
-  $('#imp').addEventListener('change', async (e) => {
+  $('#exp-file').addEventListener('click', exportFile);
+  $('#imp-file').addEventListener('change', async (e) => {
     const file = e.target.files[0];
+    e.target.value = '';
     if (!file) return;
     try {
-      const text = await file.text();
-      if (!(await confirmDialog('現在の学習データを、バックアップの内容で置き換えますか？', '復元する'))) return;
-      S = store.importJSON(text);
-      toast('バックアップから復元しました');
-      render();
+      const text = (await file.text()).trim();
+      const data = text.startsWith('ANIKAN') ? await savedata.decodeCode(text) : store.parseJSON(text);
+      await loadState(data, 'ファイルのセーブデータ');
     } catch (err) {
-      toast(`復元できませんでした: ${err.message}`);
+      toast(`読み込めませんでした: ${err.message}`);
     }
   });
+  $('#code-in').addEventListener('click', pasteCodeDialog);
   $('#rst').addEventListener('click', async () => {
-    if (!(await confirmDialog('すべての学習記録（クリア状況・復習予定）を消去します。元に戻せません。よろしいですか？', 'リセットする'))) return;
+    if (!(await confirmDialog('すべての学習記録（クリア状況・復習予定）を消去します。<br><small>消去前の状態は「自動バックアップ」スロットから戻せます。</small>', 'リセットする'))) return;
+    await autoBackup('リセット前');
     S = store.reset();
     toast('学習データをリセットしました');
-    render();
+    go('home', {}, { reset: true });
+  });
+
+  // セーブコード（コピーは操作直後でないと失敗するので事前に作っておく）
+  savedata.encodeCode(store.snapshot()).then((code) => {
+    const out = $('#code-out');
+    if (!out) return;
+    out.value = code;
+    const btn = $('#code-copy');
+    btn.disabled = false;
+    btn.addEventListener('click', async () => {
+      let ok = false;
+      try {
+        await navigator.clipboard.writeText(code);
+        ok = true;
+      } catch (e) {
+        out.focus();
+        out.select();
+        try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+      }
+      if (ok) {
+        store.markBackup();
+        toast(`セーブコードをコピーしました（${code.length.toLocaleString()}文字）`);
+      } else {
+        toast('コピーできませんでした。枠内の文字を長押しして全選択→コピーしてください');
+      }
+    });
+  }).catch(() => { const out = $('#code-out'); if (out) out.value = 'セーブコードを作成できませんでした'; });
+
+  renderSlots();
+}
+
+async function renderSlots() {
+  const box = $('#slots');
+  if (!box) return;
+  let recs = [];
+  try {
+    recs = await slots.list();
+  } catch (e) {
+    box.innerHTML = '<p class="muted">この環境ではセーブスロットを使えません（プライベートブラウズなど）。ファイルかセーブコードをお使いください。</p>';
+    return;
+  }
+  const byId = Object.fromEntries(recs.map((r) => [r.id, r]));
+  const row = (id, label, rec, canSave) => `
+    <div class="slot ${rec ? '' : 'empty'}">
+      <div class="slot-no">${label}</div>
+      <div class="slot-info">${rec
+        ? `<div class="slot-sum">${summaryLine(rec.summary)}</div><div class="muted small">${fmtDate(rec.savedAt)} に保存${rec.note ? `・${esc(rec.note)}` : ''}</div>`
+        : '<div class="muted">空きスロット</div>'}</div>
+      <div class="slot-btns">
+        ${canSave ? `<button class="btn ghost small" data-slot-save="${id}">ここにセーブ</button>` : ''}
+        ${rec ? `<button class="btn primary small" data-slot-load="${id}">ロード</button>` : ''}
+        ${rec && canSave ? `<button class="btn ghost small" data-slot-del="${id}" aria-label="削除">削除</button>` : ''}
+      </div>
+    </div>`;
+  box.innerHTML = SLOT_IDS.map((id, i) => row(id, `スロット${i + 1}`, byId[id], true)).join('')
+    + (byId.auto ? row('auto', '自動バックアップ', byId.auto, false) : '');
+  box.querySelectorAll('[data-slot-save]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.slotSave;
+    if (byId[id] && !(await confirmDialog(`スロット${SLOT_IDS.indexOf(id) + 1}を今の学習状況で上書きしますか？`, '上書きする'))) return;
+    try {
+      store.save(true);
+      await slots.put({ id, savedAt: Date.now(), summary: summaryOf(), data: store.snapshot() });
+      toast(`スロット${SLOT_IDS.indexOf(id) + 1}にセーブしました`);
+      renderSlots();
+    } catch (e) {
+      toast('セーブできませんでした');
+    }
+  }));
+  box.querySelectorAll('[data-slot-load]').forEach((b) => b.addEventListener('click', async () => {
+    const rec = byId[b.dataset.slotLoad];
+    if (!rec) return;
+    await loadState(rec.data, b.dataset.slotLoad === 'auto' ? '自動バックアップ' : `スロット${SLOT_IDS.indexOf(rec.id) + 1}`);
+  }));
+  box.querySelectorAll('[data-slot-del]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.slotDel;
+    if (!(await confirmDialog(`スロット${SLOT_IDS.indexOf(id) + 1}を削除しますか？`, '削除する'))) return;
+    await slots.remove(id);
+    renderSlots();
+  }));
+}
+
+async function autoBackup(note) {
+  try {
+    await slots.put({ id: 'auto', savedAt: Date.now(), note, summary: summaryOf(), data: store.snapshot() });
+  } catch (e) { /* スロットが使えない環境では何もしない */ }
+}
+
+async function loadState(data, label) {
+  let sm;
+  try {
+    sm = summaryOf(store.validate(data));
+  } catch (err) {
+    toast(err.message);
+    return;
+  }
+  const ok = await confirmDialog(`${esc(label)}を読み込みますか？<br><b>${summaryLine(sm)}</b><br><small>今の学習状況は「自動バックアップ」スロットに残ります。</small>`, '読み込む');
+  if (!ok) return;
+  await autoBackup(`${label}を読み込む前`);
+  S = store.replaceState(data);
+  toast(`${label}を読み込みました`);
+  go('home', {}, { reset: true });
+}
+
+async function exportFile() {
+  const json = store.exportJSON();
+  const name = `anikan-save-${store.dayKey()}.json`;
+  const file = new File([json], name, { type: 'application/json' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'アニ漢 セーブデータ' });
+      store.markBackup();
+      toast('共有メニューの「"ファイル"に保存」で iCloud Drive などに保存できます');
+      return;
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  store.markBackup();
+  toast('セーブデータをダウンロードしました（「ファイル」アプリのダウンロードに保存されます）');
+}
+
+function pasteCodeDialog() {
+  openModal(`<div class="paste-code">
+      <h3>セーブコードを貼り付け</h3>
+      <p class="muted small">「ANIKAN」で始まるセーブコードを貼り付けてください。</p>
+      <textarea class="code-box" rows="6" placeholder="ANIKAN1-…"></textarea>
+      <div class="btn-row"><button class="btn primary" data-load>読み込む</button></div>
+    </div>`, {
+    onMount(body, close) {
+      const ta = body.querySelector('textarea');
+      body.querySelector('[data-load]').addEventListener('click', async () => {
+        try {
+          const data = await savedata.decodeCode(ta.value);
+          close();
+          await loadState(data, 'セーブコード');
+        } catch (err) {
+          toast(err.message);
+        }
+      });
+    },
   });
 }
+
+const SAVE_SVG = '<svg viewBox="0 0 24 24"><path d="M5 3h11l3 3v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8V3"/><rect x="7" y="13" width="10" height="6" rx="1"/></svg>';
 
 /* ------------------------------------------------------------------ */
 /* テスト（出題・採点）                                                 */
@@ -896,9 +1255,10 @@ function startStage(g) {
   startQuiz('stage', shuffle(K.stageChars(g)), { g });
 }
 
-function startExam(r) {
-  if (!rankOpen(r)) { toast('前のランクの昇格試験に合格すると挑戦できます'); return; }
-  startQuiz('exam', shuffle(K.rankChars(r)).slice(0, 20), { r });
+function startExam(key) {
+  const spec = examSpec(key);
+  if (!spec.open) { toast('前のランクの昇格試験に合格すると挑戦できます'); return; }
+  startQuiz('exam', shuffle(spec.chars).slice(0, 20), { examKey: spec.key, examTitle: spec.title });
 }
 
 function startReview() {
@@ -936,8 +1296,8 @@ function viewQuiz() {
   const e = q.e;
   const n = quiz.items.length;
   const title = quiz.mode === 'stage'
-    ? `ステージ${K.stageNo(quiz.g)}`
-    : quiz.mode === 'exam' ? `ランク${quiz.r} 昇格試験` : MODE_LABEL[quiz.mode];
+    ? `ランク${K.levelOfStage(quiz.g).key} ステージ${K.stageNoInLevel(quiz.g)}`
+    : quiz.mode === 'exam' ? quiz.examTitle : MODE_LABEL[quiz.mode];
   setTitle(title);
   $('#topbar-right').innerHTML = `<span class="score-pill">${quizScore()}<small>点</small></span>`;
   const dots = quiz.items.map((_, i) => {
@@ -1074,7 +1434,7 @@ function finalizeAnswer() {
 
 function finishQuiz() {
   const score = quizScore();
-  const res = { mode: quiz.mode, g: quiz.g, r: quiz.r, score, answers: quiz.answers, total: quiz.items.length, passed: score >= PASS };
+  const res = { mode: quiz.mode, g: quiz.g, examKey: quiz.examKey, examTitle: quiz.examTitle, score, answers: quiz.answers, total: quiz.items.length, passed: score >= PASS };
   let firstClear = false;
   if (quiz.mode === 'stage') {
     const prev = S.cleared[quiz.g];
@@ -1082,9 +1442,9 @@ function finishQuiz() {
     S.cleared[quiz.g] = Math.max(prev ?? 0, score);
     S.attempts[quiz.g] = (S.attempts[quiz.g] || 0) + 1;
   } else if (quiz.mode === 'exam') {
-    const prev = S.exams[quiz.r];
+    const prev = S.exams[quiz.examKey];
     firstClear = res.passed && !(prev >= PASS);
-    S.exams[quiz.r] = Math.max(prev ?? 0, score);
+    S.exams[quiz.examKey] = Math.max(prev ?? 0, score);
   }
   res.firstClear = firstClear;
   store.save(true);
@@ -1106,17 +1466,21 @@ function viewResult() {
   const res = lastResult;
   if (!res) { go('home', {}, { reset: true }); return; }
   const isTest = res.mode === 'stage' || res.mode === 'exam';
-  setTitle(isTest ? (res.mode === 'stage' ? `ステージ${K.stageNo(res.g)} 結果` : `ランク${res.r} 昇格試験 結果`) : '復習の結果');
+  const stageTitle = (g) => `ランク${K.levelOfStage(g).key} ステージ${K.stageNoInLevel(g)}`;
+  setTitle(isTest ? (res.mode === 'stage' ? `${stageTitle(res.g)} 結果` : `${res.examTitle} 結果`) : '復習の結果');
   const okN = res.answers.filter((a) => a.ok).length;
   let msg = '';
   let actions = '';
   if (res.mode === 'stage') {
     const g = res.g;
-    const lastInRank = K.stageNo(g) === K.STAGES_PER_RANK;
+    const L = K.levelOfStage(g);
+    const lastInLevel = g === L.firstStage + L.stages - 1;
     if (res.passed) {
-      msg = res.firstClear ? (lastInRank ? `ランク${K.stageRank(g)}の全ステージをクリア！昇格試験に挑戦できます。` : '次のステージが解放されました！') : '合格！';
-      actions = lastInRank
-        ? `<button class="btn primary big" data-act="exam" data-r="${K.stageRank(g)}">昇格試験へ</button>`
+      msg = res.firstClear ? (lastInLevel ? `ランク${L.key}の全ステージをクリア！昇格試験に挑戦できます。` : '次のステージが解放されました！') : '合格！';
+      actions = lastInLevel
+        ? (levelPassed(L)
+          ? (K.LEVELS[L.idx + 1] ? `<button class="btn primary big" data-act="stage" data-g="${g + 1}">次のステージへ</button>` : '')
+          : `<button class="btn primary big" data-act="exam" data-key="${L.key}">昇格試験へ</button>`)
         : `<button class="btn primary big" data-act="stage" data-g="${g + 1}">次のステージへ</button>`;
       actions = `<button class="btn ghost" data-act="start-stage" data-g="${g}">もう一度</button>${actions}`;
     } else {
@@ -1124,13 +1488,14 @@ function viewResult() {
       actions = `<button class="btn ghost" data-act="stage" data-g="${g}">漢字を確認する</button><button class="btn primary big" data-act="start-stage" data-g="${g}">再挑戦</button>`;
     }
   } else if (res.mode === 'exam') {
-    const r = res.r;
+    const spec = examSpec(res.examKey);
     if (res.passed) {
-      msg = r < K.RANKS ? `昇格！ランク${r + 1}「${K.RANK_NAMES[r]}」が解放されました。` : '最終ランクの昇格試験に合格！おめでとうございます！';
-      actions = r < K.RANKS ? `<button class="btn primary big" data-act="rank" data-r="${r + 1}">ランク${r + 1}へ進む</button>` : '';
+      const nx = spec.next;
+      msg = nx ? `昇格！${K.levelLabel(nx)}が解放されました。` : '最終ランクの昇格試験に合格！おめでとうございます！';
+      actions = nx ? `<button class="btn primary big" data-act="stage" data-g="${nx.firstStage}">ランク${nx.key}へ進む</button>` : '';
     } else {
       msg = `合格まであと${PASS - res.score}点。ステージで復習してから再挑戦しよう。`;
-      actions = `<button class="btn ghost" data-act="rank" data-r="${r}">ランク${r}へ</button><button class="btn primary big" data-act="exam" data-r="${r}">再挑戦</button>`;
+      actions = `<button class="btn ghost" data-act="rank" data-r="${spec.rank}" data-focus="${spec.L ? spec.L.key : ''}">ランク${spec.L ? spec.L.key : spec.rank}へ</button><button class="btn primary big" data-act="exam" data-key="${spec.key}">再挑戦</button>`;
     }
   } else {
     msg = okN === res.total ? 'パーフェクト！記憶の安定度がアップしました。' : '間違えた字は10分後から覚え直します。';
@@ -1163,6 +1528,7 @@ function viewResult() {
 const VIEWS = {
   home: viewHome, ranks: viewRanks, rank: viewRank, stage: viewStage,
   review: viewReview, dict: viewDict, settings: viewSettings, quiz: viewQuiz, result: viewResult,
+  save: viewSave,
 };
 
 view.addEventListener('click', (e) => {
@@ -1172,31 +1538,37 @@ view.addEventListener('click', (e) => {
   const q = quiz && quiz.cur;
   switch (a) {
     case 'home': go('home', {}, { reset: true }); break;
+    case 'save': go('save'); break;
     case 'rank': {
       const r = Number(el.dataset.r);
-      go('rank', { r }, { replace: current().name === 'result' });
+      go('rank', { r, focus: el.dataset.focus || null }, { replace: current().name === 'result' });
       break;
     }
     case 'stage': {
       const g = Number(el.dataset.g);
       if (!stageOpen(g) && !isCleared(g)) { toast('前のステージを90点以上でクリアすると解放されます'); break; }
+      const L = K.levelOfStage(g);
       const fromResult = current().name === 'result';
       if (fromResult) stack.pop();
-      if (!stack.some((s) => s.name === 'rank' && s.params.r === K.stageRank(g)) && current().name !== 'rank') {
-        stack.push({ name: 'rank', params: { r: K.stageRank(g) } });
-      }
       if (current().name === 'stage') stack.pop();
+      // 戻るボタンでそのランクのステージ一覧に戻れるようにする
+      const rankIdx = stack.findIndex((s) => s.name === 'rank' && s.params.r === L.rank);
+      if (rankIdx >= 0) {
+        stack[rankIdx].params.focus = L.key;
+      } else if (current().name !== 'rank') {
+        stack.push({ name: 'rank', params: { r: L.rank, focus: L.key } });
+      }
       go('stage', { g });
       break;
     }
     case 'start-stage': startStage(Number(el.dataset.g)); break;
     case 'exam': {
-      const r = Number(el.dataset.r);
-      if (!rankOpen(r)) { toast('前のランクの昇格試験に合格すると挑戦できます'); break; }
-      const all = clearedCount(r) === K.STAGES_PER_RANK;
-      const run = () => startExam(r);
+      const spec = examSpec(el.dataset.key);
+      if (!spec.open) { toast('前のランクの昇格試験に合格すると挑戦できます'); break; }
+      const run = () => startExam(spec.key);
       if (current().name === 'result' && quiz === null) { run(); break; }
-      confirmDialog(`<b>ランク${r} ${all ? '昇格試験' : '飛び級試験'}</b><br>このランクの1000字からランダムに20問（各5点）。<br>90点以上で合格するとランク${Math.min(r + 1, K.RANKS)}が解放されます。`, '開始する').then((ok) => ok && run());
+      const nextMsg = spec.next ? `${esc(K.levelLabel(spec.next))}が解放されます` : '全ランク制覇です';
+      confirmDialog(`<b>${esc(spec.title)}</b><br>${esc(spec.label)}の${spec.size}字からランダムに20問（各5点）。<br>90点以上で合格すると${nextMsg}。`, '開始する').then((ok) => ok && run());
       break;
     }
     case 'review': startReview(); break;
@@ -1204,7 +1576,7 @@ view.addEventListener('click', (e) => {
     case 'weak': startWeak(); break;
     case 'ics': downloadICS(); break;
     case 'kanji': showKanji(el.dataset.ch); break;
-    case 'dict-rank': dictRank = Number(el.dataset.r); dictQuery = ''; viewDict(); break;
+    case 'dict-rank': dictLevel = Number(el.dataset.l); dictQuery = ''; viewDict(); break;
     // テスト中
     case 'undo': pad && pad.undo(); break;
     case 'clear': pad && pad.clear(); break;
@@ -1240,6 +1612,23 @@ $('#tabbar').addEventListener('click', (e) => {
 });
 
 $('#btn-back').addEventListener('click', back);
+
+$('#topbar-right').addEventListener('click', (e) => {
+  if (e.target.closest('[data-top="save"]')) go('save');
+});
+
+// 自動セーブのたびに右上の「セーブ」ボタンで知らせる
+window.addEventListener('anikan:saved', () => {
+  const b = $('.save-btn');
+  if (!b) return;
+  b.classList.add('saved');
+  b.querySelector('span').textContent = 'セーブ済み';
+  clearTimeout(b._t);
+  b._t = setTimeout(() => { b.classList.remove('saved'); b.querySelector('span').textContent = 'セーブ'; }, 1600);
+});
+window.addEventListener('anikan:savefail', () => {
+  toast('この端末に保存できませんでした。容量不足の可能性があります。セーブ画面からファイルに書き出してください', 5000);
+});
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
