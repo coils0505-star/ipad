@@ -1,5 +1,5 @@
 // オフライン用キャッシュ（手書き認識の通信はキャッシュしません）
-const VERSION = 'anikan-v3';
+const VERSION = 'anikan-v4';
 const ASSETS = [
   './',
   'index.html',

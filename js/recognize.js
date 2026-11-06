@@ -53,34 +53,164 @@ async function requestEndpoint(url, ink, w, h, language, timeoutMs) {
     const data = await res.json();
     if (!Array.isArray(data) || data[0] !== 'SUCCESS') throw new Error('認識に失敗しました');
     const cands = (data[1] && data[1][0] && data[1][0][1]) || [];
-    // 1文字の候補を優先（複数文字の候補は先頭の文字として扱う）
-    const out = [];
-    for (const c of cands) {
-      const ch = Array.from(c.trim())[0];
-      if (ch && !out.includes(ch)) out.push(ch);
-    }
-    return out;
+    return cands.map((c) => String(c).trim()).filter(Boolean);
   } finally {
     clearTimeout(timer);
   }
 }
 
+// ---- 1字が2字に分かれて読まれたときの読み直し ----
+// 部品の間が大きく空いていたり、字全体が縦長・横長だったりすると、認識サービスが
+// 1つの字を2字と判断することがある（例: 響 → 「郷音」、好 → 「女子」）。
+// そのときは、部品の間の何も書かれていない帯を詰め、縦横比を正方形に近づけたインクで読み直す。
+const BINS = 64;
+const GAP_MIN = 0.05;   // 字の幅（高さ）の5%以上の空白を「部品の間の隙間」とみなす
+const GAP_KEEP = 0.03;  // 詰めたあとに残す隙間
+const ASPECT = 1.12;    // これより縦長・横長なら正方形に近づける
+
+function bounds(ink) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [xs, ys] of ink) {
+    for (let i = 0; i < xs.length; i++) {
+      if (xs[i] < x0) x0 = xs[i];
+      if (xs[i] > x1) x1 = xs[i];
+      if (ys[i] < y0) y0 = ys[i];
+      if (ys[i] > y1) y1 = ys[i];
+    }
+  }
+  return { x0, y0, x1, y1 };
+}
+
+// axis 方向に投影したとき、字の中ほど（15%〜85%）にある最も広い空白の帯
+function findGap(ink, axis) {
+  const b = bounds(ink);
+  const lo = axis ? b.y0 : b.x0;
+  const span = Math.max(1, axis ? b.y1 - b.y0 : b.x1 - b.x0);
+  const cov = new Uint8Array(BINS);
+  const bin = (v) => Math.floor(((v - lo) / span) * (BINS - 1));
+  for (const s of ink) {
+    const v = s[axis];
+    for (let i = 0; i < v.length; i++) {
+      const p = v[i], q = i + 1 < v.length ? v[i + 1] : v[i];
+      for (let k = bin(Math.min(p, q)), e = bin(Math.max(p, q)); k <= e; k++) cov[k] = 1;
+    }
+  }
+  let best = null;
+  for (let k = Math.floor(BINS * 0.15), end = Math.floor(BINS * 0.85); k < end;) {
+    if (cov[k]) { k++; continue; }
+    let j = k;
+    while (j < BINS && !cov[j]) j++;
+    if (!best || j - k > best[1] - best[0]) best = [k, j];
+    k = j;
+  }
+  if (!best || (best[1] - best[0]) / BINS < GAP_MIN) return null;
+  return { a: lo + (best[0] / (BINS - 1)) * span, b: lo + (best[1] / (BINS - 1)) * span, span };
+}
+
+function closeGap(ink, axis) {
+  const g = findGap(ink, axis);
+  if (!g) return null;
+  const shift = g.b - g.a - GAP_KEEP * g.span;
+  return ink.map((s) => {
+    const t = [s[0], s[1], s[2]];
+    t[axis] = s[axis].map((v) => (v >= g.b ? v - shift : v));
+    return t;
+  });
+}
+
+function transform(ink, w, h, sx, sy) {
+  const b = bounds(ink);
+  const cx = (b.x0 + b.x1) / 2, cy = (b.y0 + b.y1) / 2;
+  return ink.map(([xs, ys, ts]) => [
+    xs.map((x) => Math.round(w / 2 + (x - cx) * sx)),
+    ys.map((y) => Math.round(h / 2 + (y - cy) * sy)),
+    ts,
+  ]);
+}
+
+/** 隙間を詰めて正方形に近づけたインク。手を加える必要がなければ null */
+export function normalizeInk(ink, w, h) {
+  if (!ink || !ink.length) return null;
+  let cur = ink;
+  let changed = false;
+  for (let n = 0; n < 4; n++) {
+    let moved = false;
+    for (const axis of [0, 1]) {
+      const v = closeGap(cur, axis);
+      if (v) { cur = v; moved = changed = true; }
+    }
+    if (!moved) break;
+  }
+  const b = bounds(cur);
+  const bw = Math.max(1, b.x1 - b.x0), bh = Math.max(1, b.y1 - b.y0);
+  let sx = 1, sy = 1;
+  if (bh / bw > ASPECT) sy = bw / bh;
+  else if (bw / bh > ASPECT) sx = bh / bw;
+  if (!changed && sx === 1 && sy === 1) return null;
+  return transform(cur, w, h, sx, sy);
+}
+
+// 漢字と形が同じカタカナ・記号（枠には漢字を書くので漢字として扱う）
+const LOOKALIKE = {
+  'ニ': '二', 'ロ': '口', 'カ': '力', 'エ': '工', 'タ': '夕', 'ハ': '八', 'ト': '卜',
+  'ヒ': '匕', 'ノ': '丿', 'ム': '厶', 'メ': '乂',
+  'ー': '一', '－': '一', '-': '一', '―': '一', '—': '一', '‐': '一', '─': '一',
+};
+
+// 認識結果（文字列の候補）→ 1字の候補の一覧
+// 2字以上の候補は「字が分かれて読まれた」ものなので、先頭の字を1字の候補より後ろに置く
+function chars(raw) {
+  const out = [];
+  const add = (c) => {
+    const k = LOOKALIKE[c] || c;
+    if (!out.includes(k)) out.push(k);
+  };
+  for (const c of raw) if (Array.from(c).length === 1) add(c);
+  for (const c of raw) {
+    const ch = Array.from(c)[0];
+    if (ch) add(ch);
+  }
+  return out;
+}
+
+const isSplit = (raw) => raw.slice(0, 2).some((c) => Array.from(c).length > 1);
+
 /**
  * @returns {Promise<string[]>} 認識候補（確からしい順）
  * @param {boolean} rare 難読字なら中国語（繁体字）モデルの候補も併用する
+ * @param {number} strokes 正解の字の画数（読み直しで別の字を正解にしないための目安）
  */
-export async function recognize(ink, w, h, { target = null, rare = false, timeoutMs = 6000 } = {}) {
-  const primary = await requestOnce(ink, w, h, 'ja', timeoutMs);
-  if (!target || !rare || primary.slice(0, 5).includes(target)) return primary;
+export async function recognize(ink, w, h, { target = null, rare = false, strokes = 0, timeoutMs = 6000 } = {}) {
+  const raw = await requestOnce(ink, w, h, 'ja', timeoutMs);
+  let cands = chars(raw);
+  if (!target) return cands;
+  // 上位の候補が2字 → 1字が部品ごとに別の字として読まれている（響 →「郷音」、胎 →「月台」など）
+  const split = isSplit(raw);
+  if (cands[0] === target && !split) return cands;
+  const fixed = normalizeInk(ink, w, h);
+  // 画数が正解よりずっと多いときは別の字を書いたとみなし、読み直しで正解にはしない
+  const tooMany = strokes > 0 && ink.length > strokes * 1.3 + 2;
+  if (fixed && (split || !tooMany)) {
+    try {
+      const again = chars(await requestOnce(fixed, w, h, 'ja', timeoutMs, false));
+      if (split) {
+        // 部品の隙間を詰めて正方形に整えたインクの結果で判定する
+        cands = again.concat(cands.filter((c) => !again.includes(c)));
+      } else if (again[0] === target) {
+        cands = [target, ...cands.filter((c) => c !== target)];
+      }
+    } catch (e) { /* 元の認識結果で判定する */ }
+  }
+  if (cands[0] === target || !rare || cands.slice(0, 5).includes(target)) return cands;
   // 日本語モデルが知らない難読字は繁体字モデルでも試す
   try {
-    const extra = await requestOnce(ink, w, h, 'zh_TW', timeoutMs, false);
+    const extra = chars(await requestOnce(split && fixed ? fixed : ink, w, h, 'zh_TW', timeoutMs, false));
     if (extra[0] === target) {
-      return [target, ...primary.filter((c) => c !== target)];
+      return [target, ...cands.filter((c) => c !== target)];
     }
-    return primary.concat(extra.filter((c) => !primary.includes(c)));
+    return cands.concat(extra.filter((c) => !cands.includes(c)));
   } catch (e) {
-    return primary;
+    return cands;
   }
 }
 

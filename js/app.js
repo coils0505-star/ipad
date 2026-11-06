@@ -1433,7 +1433,7 @@ async function submitAnswer() {
   viewQuiz();
   try {
     const rank = K.rankOfIndex(K.indexOf(q.ch));
-    const cands = await recognize(ink, w, h, { target: q.ch, rare: rank >= 4 });
+    const cands = await recognize(ink, w, h, { target: q.ch, rare: rank >= 4, strokes: (K.byChar(q.ch) || {}).s || 0 });
     if (quiz && quiz.cur === q) {
       q.cands = cands;
       q.ok = judge(cands, q.ch, Number(S.settings.strict) || 1);
@@ -1810,7 +1810,7 @@ async function cSubmit() {
     const strict = Number(S.settings.strict) || 1;
     const res = await Promise.all(q.boxes.map((b) => {
       const i = K.indexOf(b.ch);
-      return recognize(b.ink, b.w, b.h, { target: b.ch, rare: i < 0 || K.rankOfIndex(i) >= 4 });
+      return recognize(b.ink, b.w, b.h, { target: b.ch, rare: i < 0 || K.rankOfIndex(i) >= 4, strokes: i >= 0 ? K.KANJI[i].s : 0 });
     }));
     if (!game || game.cur !== q) return;
     q.boxes.forEach((b, i) => { b.cands = res[i]; b.ok = judge(res[i], b.ch, strict); });
