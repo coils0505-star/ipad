@@ -182,17 +182,22 @@ const isSplit = (raw) => raw.slice(0, 2).some((c) => Array.from(c).length > 1);
  */
 export async function recognize(ink, w, h, { target = null, rare = false, strokes = 0, timeoutMs = 6000 } = {}) {
   const raw = await requestOnce(ink, w, h, 'ja', timeoutMs);
+  // 認識サービスの生の結果（認識ミスの記録用）
+  const info = { raw: raw.slice(0, 8) };
+  const done = (list) => Object.assign(list, { info });
   let cands = chars(raw);
-  if (!target) return cands;
+  if (!target) return done(cands);
   // 上位の候補が2字 → 1字が部品ごとに別の字として読まれている（響 →「郷音」、胎 →「月台」など）
   const split = isSplit(raw);
-  if (cands[0] === target && !split) return cands;
+  if (cands[0] === target && !split) return done(cands);
   const fixed = normalizeInk(ink, w, h);
   // 画数が正解よりずっと多いときは別の字を書いたとみなし、読み直しで正解にはしない
   const tooMany = strokes > 0 && ink.length > strokes * 1.3 + 2;
   if (fixed && (split || !tooMany)) {
     try {
-      const again = chars(await requestOnce(fixed, w, h, 'ja', timeoutMs, false));
+      const raw2 = await requestOnce(fixed, w, h, 'ja', timeoutMs, false);
+      info.raw2 = raw2.slice(0, 8);
+      const again = chars(raw2);
       if (split) {
         // 部品の隙間を詰めて正方形に整えたインクの結果で判定する
         cands = again.concat(cands.filter((c) => !again.includes(c)));
@@ -201,16 +206,18 @@ export async function recognize(ink, w, h, { target = null, rare = false, stroke
       }
     } catch (e) { /* 元の認識結果で判定する */ }
   }
-  if (cands[0] === target || !rare || cands.slice(0, 5).includes(target)) return cands;
+  if (cands[0] === target || !rare || cands.slice(0, 5).includes(target)) return done(cands);
   // 日本語モデルが知らない難読字は繁体字モデルでも試す
   try {
-    const extra = chars(await requestOnce(split && fixed ? fixed : ink, w, h, 'zh_TW', timeoutMs, false));
+    const rawZh = await requestOnce(split && fixed ? fixed : ink, w, h, 'zh_TW', timeoutMs, false);
+    info.zh = rawZh.slice(0, 8);
+    const extra = chars(rawZh);
     if (extra[0] === target) {
-      return [target, ...cands.filter((c) => c !== target)];
+      return done([target, ...cands.filter((c) => c !== target)]);
     }
-    return cands.concat(extra.filter((c) => !cands.includes(c)));
+    return done(cands.concat(extra.filter((c) => !cands.includes(c))));
   } catch (e) {
-    return cands;
+    return done(cands);
   }
 }
 

@@ -63,6 +63,17 @@ async function pipe(bytes, stream) {
   return new Uint8Array(await res.arrayBuffer());
 }
 
+// 任意のデータを <prefix>1-<base64url(gzip(JSON))>（未対応なら <prefix>0-…）にする
+export async function packCode(prefix, obj) {
+  const json = new TextEncoder().encode(JSON.stringify(obj));
+  if (typeof CompressionStream !== 'undefined') {
+    try {
+      return `${prefix}1-${toB64url(await pipe(json, new CompressionStream('gzip')))}`;
+    } catch (e) { /* 圧縮できなければ非圧縮で */ }
+  }
+  return `${prefix}0-${toB64url(json)}`;
+}
+
 export async function encodeCode(state) {
   const json = new TextEncoder().encode(JSON.stringify(compact(state)));
   if (typeof CompressionStream !== 'undefined') {

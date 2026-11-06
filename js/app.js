@@ -5,6 +5,7 @@ import { InkPad } from './ink.js';
 import { recognize, judge, isDown } from './recognize.js';
 import * as slots from './slots.js';
 import * as savedata from './savedata.js';
+import * as misreads from './misreads.js';
 
 const PASS = 90;
 const DAY = 86400000;
@@ -956,6 +957,16 @@ function viewSettings() {
         <div class="seg">${opt('guide', 'true', '表示', st.guide)}${opt('guide', 'false', '非表示', st.guide)}</div></div>
       <div class="set-test"><div class="set-lbl">試し書き</div><div class="set-pad"></div><button class="btn ghost small" id="pad-clear">消す</button></div>
     </section>
+    <section class="card settings" id="mr-card">
+      <h3>認識ミスの記録</h3>
+      <p class="muted small">「認識ミス（正解にする）」を押した字は、書いた線のデータと認識結果をこの端末の中に記録しています（最新20件）。うまく認識されない字があるときは、記録をコピーして開発者に送ると原因の調査に使えます。記録には書いた線・認識結果・端末の種類が含まれます。</p>
+      <div class="mr-sum" id="mr-sum"></div>
+      <div class="btn-row left">
+        <button class="btn primary" id="mr-copy" disabled>記録をコピー</button>
+        <button class="btn ghost" id="mr-clear" disabled>記録を消す</button>
+      </div>
+      <textarea class="code-box" id="mr-out" readonly hidden aria-label="認識ミスの記録コード"></textarea>
+    </section>
     <section class="card settings">
       <h3>学習データ</h3>
       <p class="muted small">学習状況は自動でセーブされます。セーブスロットへの保存、ファイルへの書き出し、別の端末への引き継ぎは「セーブ」画面から行えます。</p>
@@ -985,6 +996,51 @@ function viewSettings() {
   mountTestPad();
   $('#pad-clear').addEventListener('click', () => pad && pad.clear());
   $('#go-save').addEventListener('click', () => go('save'));
+  setupMisreads();
+}
+
+// 設定画面の「認識ミスの記録」（コピーは操作直後でないと失敗するので事前にコードを作っておく）
+function setupMisreads() {
+  const recs = misreads.list();
+  const sum = $('#mr-sum');
+  const copyBtn = $('#mr-copy'), clearBtn = $('#mr-clear'), out = $('#mr-out');
+  if (!recs.length) {
+    sum.innerHTML = '<p class="small muted">まだ記録はありません。</p>';
+    return;
+  }
+  const chips = recs.slice().reverse().map((r) => {
+    const got = (r.cands && r.cands[0]) || '？';
+    return `<span class="mr-chip"><b>${esc(r.target)}</b>→${esc(got)}</span>`;
+  }).join('');
+  sum.innerHTML = `<p class="small"><b>${recs.length}件</b>（書いた字 → 認識された字）</p><div class="mr-chips">${chips}</div>`;
+  clearBtn.disabled = false;
+  clearBtn.addEventListener('click', async () => {
+    if (!(await confirmDialog('認識ミスの記録をすべて消去します。', '消去する'))) return;
+    misreads.clear();
+    toast('記録を消去しました');
+    viewSettings();
+  });
+  misreads.encode(recs).then((code) => {
+    out.value = code;
+    copyBtn.disabled = false;
+    copyBtn.addEventListener('click', async () => {
+      let ok = false;
+      try {
+        await navigator.clipboard.writeText(code);
+        ok = true;
+      } catch (e) {
+        out.hidden = false;
+        out.focus();
+        out.select();
+        try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+      }
+      if (ok) toast(`記録をコピーしました（${recs.length}件・${code.length.toLocaleString()}文字）`);
+      else {
+        out.hidden = false;
+        toast('コピーできませんでした。枠内の文字を長押しして全選択→コピーしてください');
+      }
+    });
+  }).catch(() => { sum.insertAdjacentHTML('beforeend', '<p class="small muted">記録のコードを作成できませんでした</p>'); });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1429,6 +1485,7 @@ async function submitAnswer() {
   }
   const ink = pad.toInk();
   const w = pad.w, h = pad.h;
+  Object.assign(q, { ink, w, h, pen: pad.strokes.every((s) => s.pen) });
   q.phase = 'checking';
   viewQuiz();
   try {
@@ -1941,7 +1998,14 @@ view.addEventListener('click', (e) => {
     case 'cgiveup': if (game) cGiveUp(); break;
     case 'cself-ok': if (game) { game.cur.ok = true; game.cur.boxes.forEach((b) => { b.ok = true; }); cFinalize(); } break;
     case 'cself-ng': if (game) { game.cur.ok = false; cFinalize(); } break;
-    case 'coverride': if (game) { game.cur.ok = true; game.cur.overridden = true; game.cur.boxes.forEach((b) => { b.ok = true; }); viewCGame(); } break;
+    case 'coverride': if (game) {
+      const cq = game.cur;
+      cq.boxes.forEach((b) => {
+        if (!b.ok && b.cands && b.ink) misreads.add({ mode: 'challenge', target: b.ch, name: cq.item.text, cands: b.cands, info: b.cands.info, w: b.w, h: b.h, ink: b.ink, pen: (b.strokes || []).every((s) => s.pen) });
+        b.ok = true;
+      });
+      cq.ok = true; cq.overridden = true; viewCGame();
+    } break;
     case 'cfinal': if (game) cFinalize(); break;
     case 'rank': {
       const r = Number(el.dataset.r);
@@ -1997,7 +2061,10 @@ view.addEventListener('click', (e) => {
       break;
     case 'self-ok': if (q) { q.ok = true; finalizeAnswer(); } break;
     case 'self-ng': if (q) { q.ok = false; finalizeAnswer(); } break;
-    case 'override': if (q) { q.ok = true; q.overridden = true; viewQuiz(); } break;
+    case 'override': if (q) {
+      if (q.cands && q.ink) misreads.add({ mode: 'quiz', target: q.ch, cands: q.cands, info: q.cands.info, w: q.w, h: q.h, ink: q.ink, pen: q.pen });
+      q.ok = true; q.overridden = true; viewQuiz();
+    } break;
     case 'next': if (q) finalizeAnswer(); break;
     default: break;
   }
