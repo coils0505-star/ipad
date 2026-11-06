@@ -115,7 +115,7 @@ function summaryOf(state = S) {
 /* ------------------------------------------------------------------ */
 /* ルーティング                                                         */
 /* ------------------------------------------------------------------ */
-const TABS = ['home', 'ranks', 'review', 'dict', 'settings'];
+const TABS = ['home', 'ranks', 'challenge', 'review', 'dict', 'settings'];
 
 function go(name, params = {}, opts = {}) {
   if (opts.reset) stack = [];
@@ -129,6 +129,10 @@ function back() {
     confirmQuit();
     return;
   }
+  if (current().name === 'cgame') {
+    confirmChallengeQuit();
+    return;
+  }
   if (stack.length > 1) stack.pop();
   render();
 }
@@ -140,10 +144,10 @@ function render() {
   const { name, params } = current();
   const app = $('#app');
   app.dataset.view = name;
-  const tab = TABS.includes(name) ? name : ({ rank: 'ranks', stage: 'ranks', quiz: null, result: null, save: null }[name] ?? null);
+  const tab = TABS.includes(name) ? name : ({ rank: 'ranks', stage: 'ranks', quiz: null, result: null, save: null, cgame: null, cresult: 'challenge' }[name] ?? null);
   document.querySelectorAll('#tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
-  $('#btn-back').hidden = stack.length <= 1 && name !== 'quiz';
-  $('#topbar-right').innerHTML = name === 'quiz' || name === 'save'
+  $('#btn-back').hidden = stack.length <= 1 && name !== 'quiz' && name !== 'cgame';
+  $('#topbar-right').innerHTML = name === 'quiz' || name === 'save' || name === 'cgame'
     ? ''
     : `<button class="save-btn" data-top="save" aria-label="セーブ画面を開く">${SAVE_SVG}<span>セーブ</span></button>`;
   view.scrollTop = 0;
@@ -159,7 +163,7 @@ function setTitle(t) {
 }
 
 function updateBadge() {
-  const due = srs.dueList().length;
+  const due = srs.dueList().length + srs.names.dueList().length;
   const b = $('#tab-badge');
   b.hidden = due === 0;
   b.textContent = due > 99 ? '99+' : String(due);
@@ -568,6 +572,7 @@ function viewHome() {
       <div class="hero-cta">${cta}</div>
     </section>
     ${dueBox}
+    ${challengeCard()}
     ${backupNotice(sum)}
     <section class="tiles">
       <div class="tile"><span class="tile-lbl">学習した漢字</span><span class="tile-val">${sum.learned.toLocaleString()}<small>/ ${K.TOTAL.toLocaleString()}</small></span></div>
@@ -600,6 +605,21 @@ function viewHome() {
     alertShown = true;
     showReviewAlert(sum.due);
   }
+}
+
+function challengeCard() {
+  const best = (S.challenge && S.challenge.best) || {};
+  const top = Math.max(0, ...Object.values(best));
+  const nd = srs.names.dueList().length;
+  return `<section class="card challenge-card">
+      <div class="ch-badge small" aria-hidden="true">挑</div>
+      <div class="challenge-card-body">
+        <b>チャレンジモード</b>
+        <div class="muted small">アニメタイトル・キャラ名を全部書けるか挑戦。ライフ${LIVES}つ。ベスト ${top}問${nd ? `・<b class="accent-text">名前の復習待ち ${nd}件</b>` : ''}</div>
+      </div>
+      ${nd ? '<button class="btn accent" data-act="name-review">名前を復習</button>' : ''}
+      <button class="btn primary" data-act="challenge-home">挑戦する</button>
+    </section>`;
 }
 
 function showIntro() {
@@ -783,6 +803,7 @@ function viewReview() {
         ${!due.length && sum.learned ? '<button class="btn ghost" data-act="ahead">前倒しで復習</button>' : ''}
       </div>
     </section>
+    ${nameReviewCard()}
     <section class="card">
       <h3 class="chart-title">今後7日間の復習予定 <small>字数</small></h3>
       ${forecastChart(srs.forecast(7))}
@@ -806,6 +827,21 @@ function viewReview() {
     </section>`;
   bindBarTips(view);
   $('#remind-time').addEventListener('change', (e) => { S.settings.remindTime = e.target.value || '20:00'; store.save(); });
+}
+
+function nameReviewCard() {
+  const nd = srs.names.dueList();
+  const all = Object.keys(S.csrs || {});
+  if (!all.length) return '';
+  const next = srs.names.nextDue();
+  const weak = srs.names.weakList(40);
+  return `<section class="card review-main ${nd.length ? 'alert' : ''}">
+      <h3>タイトル・キャラ名の復習 <small>チャレンジで書けなかった名前 ${all.length}件</small></h3>
+      <div class="review-head"><span class="review-num ${nd.length ? '' : 'ok'}">${nd.length}</span><span>件が復習待ち</span></div>
+      <p class="muted">${nd.length ? '名前の漢字をすべて書いて答えます（ライフなし）。' : next ? `次の復習は <b>${fmtDate(next)}</b> です。` : ''}</p>
+      <div class="name-chips">${weak.map((id) => `<button class="name-chip" data-act="name-item" data-id="${esc(id)}">${esc(id.slice(2).split('|')[0])}</button>`).join('')}</div>
+      <div class="btn-row left"><button class="btn accent big" data-act="name-review" ${nd.length ? '' : 'disabled'}>名前の復習をはじめる</button></div>
+    </section>`;
 }
 
 function downloadICS() {
@@ -928,7 +964,7 @@ function viewSettings() {
     <section class="card about">
       <h3>このアプリについて</h3>
       <p class="small muted">収録 ${K.TOTAL.toLocaleString()}字（${K.RANKS}ランク × ${K.PER_RANK}字。ランク1〜${K.SUB_RANKS}は${K.SUB_SIZE}字ごとの${K.PER_RANK / K.SUB_SIZE}段階に細分化）。並び順はアニメのタイトル・キャラクター名・頻出語での出現と、一般語・人名での使用頻度から算出しています。</p>
-      <p class="small muted">漢字・単語・人名データ: <a href="https://www.edrdg.org/wiki/index.php/KANJIDIC_Project" target="_blank" rel="noopener">KANJIDIC2</a> / <a href="https://www.edrdg.org/jmdict/j_jmdict.html" target="_blank" rel="noopener">JMdict</a> / JMnedict © Electronic Dictionary Research and Development Group（<a href="https://www.edrdg.org/edrdg/licence.html" target="_blank" rel="noopener">CC BY-SA 4.0</a>）。作品名・人名は各権利者に帰属します。</p>
+      <p class="small muted">漢字・単語・人名データ: <a href="https://www.edrdg.org/wiki/index.php/KANJIDIC_Project" target="_blank" rel="noopener">KANJIDIC2</a> / <a href="https://www.edrdg.org/jmdict/j_jmdict.html" target="_blank" rel="noopener">JMdict</a> / JMnedict © Electronic Dictionary Research and Development Group（<a href="https://www.edrdg.org/edrdg/licence.html" target="_blank" rel="noopener">CC BY-SA 4.0</a>）。チャレンジ用の作品名・キャラクター名: Wikidata（CC0）／ Wikipedia 日本語版（CC BY-SA 4.0）／ mecab-ipadic-NEologd（Apache-2.0）。作品名・人名は各権利者に帰属します。</p>
     </section>`;
 
   view.querySelectorAll('.seg input').forEach((inp) => inp.addEventListener('change', () => {
@@ -1523,12 +1559,366 @@ function viewResult() {
 }
 
 /* ------------------------------------------------------------------ */
+/* チャレンジモード: アニメタイトル・キャラクター名を全部書く             */
+/* ------------------------------------------------------------------ */
+const LIVES = 5;
+const CH_MODES = { mix: 'ミックス', title: 'タイトルだけ', char: 'キャラクターだけ' };
+const isKanjiChar = (c) => /[㐀-鿿豈-﫿]/.test(c);
+let CH = null;
+let game = null;
+let lastGame = null;
+
+function loadChallengeData() {
+  if (CH) return Promise.resolve(CH);
+  const prep = () => {
+    const D = window.CHALLENGE_DATA;
+    const titles = D.titles.map(([text, read], i) => ({ id: `t:${text}`, kind: 't', text, read, rank: i }));
+    const chars = D.chars.map(([text, read, w], i) => ({ id: `c:${text}|${D.works[w]}`, kind: 'c', text, read, work: D.works[w], rank: i }));
+    CH = { titles, chars, byId: new Map([...titles, ...chars].map((x) => [x.id, x])) };
+    return CH;
+  };
+  if (window.CHALLENGE_DATA) return Promise.resolve(prep());
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'data/challenge-data.js';
+    s.onload = () => resolve(prep());
+    s.onerror = () => { s.remove(); reject(new Error('チャレンジ用データを読み込めませんでした')); };
+    document.head.appendChild(s);
+  });
+}
+
+function nameLabel(it) {
+  if (it.kind === 't') return 'アニメタイトル';
+  // 「*」付きはジャンルのまとまり（例: *昭和の名作アニメ）
+  return it.work.startsWith('*') ? `${it.work.slice(1)}の登場人物` : `『${it.work}』の登場人物`;
+}
+
+function nameDueList() {
+  return srs.names.dueList();
+}
+
+function showNameItem(id) {
+  const it = CH && CH.byId.get(id);
+  const rec = srs.names.get(id);
+  const [kind, rest] = [id.slice(0, 1), id.slice(2)];
+  const text = it ? it.text : rest.split('|')[0];
+  openModal(`<div class="intro">
+      <div class="name-big">${esc(text)}</div>
+      ${it ? `<div class="q-reading">${esc(it.read)}</div><div class="q-label">${esc(nameLabel(it))}</div>` : `<div class="q-label">${kind === 't' ? 'アニメタイトル' : '登場人物'}</div>`}
+      ${rec ? `<p class="muted">間違えた回数 ${rec.lapses}回・次回の復習 <b>${rec.due <= Date.now() ? '今すぐ' : fmtDate(rec.due)}</b></p>` : ''}
+    </div>`);
+}
+
+function viewChallenge() {
+  setTitle('チャレンジ');
+  const best = (S.challenge && S.challenge.best) || {};
+  const mode = S.settings.challengeMode || 'mix';
+  const due = nameDueList().length;
+  view.innerHTML = `
+    <section class="card challenge-hero">
+      <div class="ch-badge" aria-hidden="true">挑</div>
+      <div>
+        <h2>チャレンジモード</h2>
+        <p class="muted">メジャーなアニメの<b>タイトル</b>と<b>キャラクター名</b>を、漢字ひと文字も間違えずに全部書けるか挑戦！<br>
+        <b class="lives-inline">♥×${LIVES}</b> 5回間違えたらゲームオーバー。間違えた名前は「復習」に追加されます。</p>
+      </div>
+    </section>
+    <section class="card">
+      <h3>出題</h3>
+      <div class="seg ch-mode">${Object.entries(CH_MODES).map(([k, v]) => `<label class="seg-opt"><input type="radio" name="chmode" value="${k}" ${k === mode ? 'checked' : ''}><span>${v}</span></label>`).join('')}</div>
+      <p class="muted small" id="ch-count">データを読み込み中…</p>
+      <div class="ch-best">${Object.entries(CH_MODES).map(([k, v]) => `<div class="tile"><span class="tile-lbl">ベスト（${v}）</span><span class="tile-val">${best[k] ?? 0}<small>問</small></span></div>`).join('')}</div>
+      <div class="btn-row"><button class="btn primary big" id="ch-start" disabled>チャレンジ開始</button></div>
+      <p class="muted small center">はじめは有名な作品から、正解するほど幅広い作品から出題されます。</p>
+    </section>
+    <section class="card">
+      <h3>間違えた名前の復習 <small>${due}件が復習待ち</small></h3>
+      <p class="muted small">チャレンジで書けなかったタイトル・キャラクター名は、忘却曲線に沿って復習に出題されます（ライフなし）。</p>
+      <div class="btn-row left"><button class="btn accent" data-act="name-review" ${due ? '' : 'disabled'}>名前の復習をはじめる</button></div>
+    </section>`;
+  view.querySelectorAll('input[name="chmode"]').forEach((inp) => inp.addEventListener('change', () => {
+    S.settings.challengeMode = inp.value;
+    store.save();
+  }));
+  loadChallengeData().then((d) => {
+    const c = $('#ch-count');
+    if (!c) return;
+    c.textContent = `収録: アニメタイトル ${d.titles.length.toLocaleString()}件・キャラクター名 ${d.chars.length.toLocaleString()}件`;
+    const b = $('#ch-start');
+    b.disabled = false;
+    b.addEventListener('click', () => startChallenge(S.settings.challengeMode || 'mix'));
+  }).catch((e) => {
+    const c = $('#ch-count');
+    if (c) c.textContent = `${e.message}。通信状態を確認して開き直してください。`;
+  });
+}
+
+function pickChallengeItem() {
+  const wantTitle = game.mode === 'title' || (game.mode === 'mix' && Math.random() < 0.4);
+  const pool = wantTitle ? CH.titles : CH.chars;
+  // 最初は有名どころ（上位）から、問題が進むほど出題範囲を広げる
+  const n = Math.min(pool.length, 150 + game.qn * 60);
+  for (let t = 0; t < 60; t++) {
+    const it = pool[Math.floor(Math.random() * n)];
+    if (!game.used.has(it.id)) { game.used.add(it.id); return it; }
+  }
+  const it = pool.find((x) => !game.used.has(x.id)) || pool[0];
+  game.used.add(it.id);
+  return it;
+}
+
+function newChallengeQuestion(item) {
+  const chars = Array.from(item.text);
+  const boxes = [];
+  chars.forEach((c, pos) => { if (isKanjiChar(c)) boxes.push({ pos, ch: c, strokes: null, img: null, ink: null, ok: null, cands: null }); });
+  game.cur = { item, chars, boxes, bi: 0, phase: 'write', ok: null };
+}
+
+async function startChallenge(mode) {
+  try { await loadChallengeData(); } catch (e) { toast(e.message); return; }
+  game = { mode, lives: LIVES, score: 0, qn: 0, used: new Set(), history: [], missed: [] };
+  newChallengeQuestion(pickChallengeItem());
+  go('cgame', {}, { replace: current().name === 'cresult' });
+}
+
+async function startNameReview() {
+  try { await loadChallengeData(); } catch (e) { toast(e.message); return; }
+  const ids = nameDueList().filter((id) => CH.byId.has(id)).slice(0, Number(S.settings.reviewSize) || 20);
+  if (!ids.length) { toast('復習待ちの名前はありません'); return; }
+  game = { mode: 'review', items: ids.map((id) => CH.byId.get(id)), lives: Infinity, score: 0, qn: 0, used: new Set(), history: [], missed: [] };
+  newChallengeQuestion(game.items[0]);
+  go('cgame', {}, { replace: current().name === 'cresult' });
+}
+
+function saveBox() {
+  const q = game.cur;
+  const b = q.boxes[q.bi];
+  if (!pad || !b) return;
+  if (pad.isEmpty()) {
+    Object.assign(b, { strokes: null, img: null, ink: null });
+  } else {
+    Object.assign(b, { strokes: pad.strokes, img: pad.toDataURL(), ink: pad.toInk(), w: pad.w, h: pad.h });
+  }
+}
+
+function heartsHTML() {
+  if (game.mode === 'review') return '';
+  return `<span class="hearts" aria-label="ライフ残り${game.lives}">${Array.from({ length: LIVES }, (_, i) => `<i class="${i < game.lives ? 'on' : 'off'}">♥</i>`).join('')}</span>`;
+}
+
+function viewCGame() {
+  if (pad) { pad.destroy(); pad = null; }
+  if (!game) { back(); return; }
+  const q = game.cur;
+  const it = q.item;
+  const isReview = game.mode === 'review';
+  setTitle(isReview ? '名前の復習' : 'チャレンジ');
+  $('#topbar-right').innerHTML = `<span class="score-pill">${game.score}<small>問正解</small></span>`;
+  const write = q.phase === 'write' || q.phase === 'checking';
+  const nameHTML = q.chars.map((c, pos) => {
+    const bi = q.boxes.findIndex((b) => b.pos === pos);
+    if (bi < 0) return `<span class="ctext">${esc(c)}</span>`;
+    const b = q.boxes[bi];
+    if (write) {
+      return `<button class="cbox ${bi === q.bi ? 'cur' : ''} ${b.img ? 'filled' : ''}" data-act="cbox" data-bi="${bi}" aria-label="${bi + 1}字目">${b.img ? `<img src="${b.img}" alt="">` : ''}</button>`;
+    }
+    const cls = q.phase === 'self' ? '' : b.ok ? 'ok' : 'ng';
+    return `<span class="cans ${cls}">${esc(c)}</span>`;
+  }).join('');
+  const prompt = `
+    <div class="q-label">${esc(nameLabel(it))}</div>
+    <div class="q-reading">${esc(it.read)}</div>
+    <div class="cname">${nameHTML}</div>
+    <div class="q-ask">${write ? `□の漢字をすべて書きましょう（${q.boxes.length}字中 <b>${q.bi + 1}字目</b>）` : q.phase === 'self' ? 'お手本と見比べて採点してください' : ''}</div>`;
+  let side;
+  if (write) {
+    const last = q.bi === q.boxes.length - 1;
+    side = `<div class="pad-holder"></div>
+      <div class="pad-tools">
+        <button class="btn ghost" data-act="undo">1画戻す</button>
+        <button class="btn ghost" data-act="clear">消す</button>
+        <button class="btn ghost" data-act="cprev" ${q.bi === 0 ? 'disabled' : ''}>◀ 前の字</button>
+        ${last ? `<button class="btn primary big" data-act="csubmit">${S.settings.judge === 'self' ? '答え合わせ' : '判定する'}</button>`
+          : '<button class="btn primary big" data-act="cnext">次の字 ▶</button>'}
+      </div>
+      <div class="btn-row"><button class="btn ghost small" data-act="cgiveup">わからない</button></div>
+      ${q.phase === 'checking' ? '<div class="checking"><span class="spinner"></span>認識中…</div>' : ''}`;
+  } else {
+    const verdict = q.phase === 'self'
+      ? '<div class="verdict self">全部正しく書けましたか？</div>'
+      : `<div class="verdict ${q.ok ? 'ok' : 'ng'}"><span class="mark">${q.ok ? '○' : '×'}</span>${q.ok ? '全部正解！' : '不正解'}${q.overridden ? '<small>（自己判定）</small>' : ''}</div>`;
+    const grid = `<div class="ccompare">${q.boxes.map((b) => `
+        <figure class="${q.phase === 'self' ? '' : b.ok ? 'ok' : 'ng'}">
+          ${b.img ? `<img src="${b.img}" alt="">` : '<div class="empty-ink">—</div>'}
+          <figcaption><span class="answer-k small">${esc(b.ch)}</span>${b.cands && !b.ok ? `<span class="cand-mini">認識: ${esc(b.cands.slice(0, 3).join(' '))}</span>` : ''}</figcaption>
+        </figure>`).join('')}</div>`;
+    let btns;
+    if (q.phase === 'self') {
+      btns = '<div class="btn-row"><button class="btn ng-btn big" data-act="cself-ng">× 書けなかった</button><button class="btn ok-btn big" data-act="cself-ok">○ 全部書けた</button></div>';
+    } else {
+      const willEnd = !q.ok && game.lives - 1 <= 0 && !isReview;
+      const lastReview = isReview && game.qn + 1 >= game.items.length;
+      btns = `<div class="btn-row">
+        ${!q.ok && !q.overridden && q.boxes.some((b) => b.cands) ? '<button class="btn ghost" data-act="coverride">認識ミス（正解にする）</button>' : ''}
+        <button class="btn primary big" data-act="cfinal">${willEnd || lastReview ? '結果を見る' : '次の問題へ'}</button></div>
+        ${!q.ok && !isReview ? `<p class="muted small center">この名前は「復習」に追加されます${willEnd ? '' : `（残りライフ ${game.lives - 1}）`}</p>` : ''}`;
+    }
+    side = `<div class="feedback">${verdict}${grid}${btns}</div>`;
+  }
+  const progress = isReview ? `名前の復習　第${game.qn + 1}問 / ${game.items.length}` : `チャレンジ（${CH_MODES[game.mode]}）　第${game.qn + 1}問`;
+  view.innerHTML = `
+    <div class="quiz cgame">
+      <div class="quiz-progress"><span>${progress}</span>${heartsHTML()}</div>
+      <div class="quiz-main">
+        <section class="card prompt">${prompt}</section>
+        <section class="card answer ${q.phase}">${side}</section>
+      </div>
+    </div>`;
+  if (write) {
+    pad = new InkPad(view.querySelector('.pad-holder'), padOpts());
+    const b = q.boxes[q.bi];
+    if (b && b.strokes) { pad.strokes = b.strokes; pad.redraw(); }
+  }
+}
+
+function cMove(to) {
+  const q = game.cur;
+  saveBox();
+  q.bi = Math.max(0, Math.min(q.boxes.length - 1, to));
+  viewCGame();
+}
+
+async function cSubmit() {
+  const q = game.cur;
+  if (q.phase !== 'write') return;
+  saveBox();
+  const empty = q.boxes.findIndex((b) => !b.ink);
+  if (empty >= 0) {
+    toast(`${empty + 1}字目がまだ書かれていません`);
+    q.bi = empty;
+    viewCGame();
+    return;
+  }
+  if (S.settings.judge === 'self' || isDown() || navigator.onLine === false) {
+    q.phase = 'self';
+    viewCGame();
+    return;
+  }
+  q.phase = 'checking';
+  viewCGame();
+  try {
+    const strict = Number(S.settings.strict) || 1;
+    const res = await Promise.all(q.boxes.map((b) => {
+      const i = K.indexOf(b.ch);
+      return recognize(b.ink, b.w, b.h, { target: b.ch, rare: i < 0 || K.rankOfIndex(i) >= 4 });
+    }));
+    if (!game || game.cur !== q) return;
+    q.boxes.forEach((b, i) => { b.cands = res[i]; b.ok = judge(res[i], b.ch, strict); });
+    q.ok = q.boxes.every((b) => b.ok);
+    q.phase = 'feedback';
+  } catch (e) {
+    if (!game || game.cur !== q) return;
+    toast('手書き認識に接続できないため、自己採点に切り替えました');
+    q.phase = 'self';
+  }
+  viewCGame();
+}
+
+function cGiveUp() {
+  const q = game.cur;
+  saveBox();
+  q.boxes.forEach((b) => { b.ok = false; });
+  q.ok = false;
+  q.phase = 'feedback';
+  viewCGame();
+}
+
+function cFinalize() {
+  const q = game.cur;
+  const it = q.item;
+  const now = Date.now();
+  if (game.mode === 'review') {
+    srs.names.review(it.id, q.ok, now);
+  } else if (!q.ok) {
+    // 間違えた名前はすぐに復習待ちへ
+    const rec = srs.names.softUpdate(it.id, false, now);
+    rec.due = now;
+  } else if (srs.names.get(it.id)) {
+    srs.names.softUpdate(it.id, true, now);
+  }
+  store.logAnswer(q.ok, false);
+  game.history.push({ item: it, ok: q.ok, imgs: q.boxes.map((b) => b.img) });
+  if (q.ok) game.score++;
+  else { game.lives--; game.missed.push(it); }
+  game.qn++;
+  store.save();
+  const over = game.mode === 'review' ? game.qn >= game.items.length : game.lives <= 0;
+  if (over) {
+    finishChallenge();
+    return;
+  }
+  newChallengeQuestion(game.mode === 'review' ? game.items[game.qn] : pickChallengeItem());
+  viewCGame();
+}
+
+function finishChallenge(quit = false) {
+  const g = game;
+  const res = { mode: g.mode, score: g.score, total: g.qn, history: g.history, missed: g.missed, quit, newBest: false };
+  if (g.mode !== 'review') {
+    S.challenge = S.challenge || { best: {}, plays: 0 };
+    S.challenge.best = S.challenge.best || {};
+    const prev = S.challenge.best[g.mode] ?? 0;
+    if (g.score > prev) { S.challenge.best[g.mode] = g.score; res.newBest = g.qn > 0; }
+    res.best = Math.max(prev, g.score);
+    S.challenge.plays = (S.challenge.plays || 0) + 1;
+  }
+  store.save(true);
+  lastGame = res;
+  game = null;
+  go('cresult', {}, { replace: true });
+}
+
+async function confirmChallengeQuit() {
+  const isReview = game && game.mode === 'review';
+  const ok = await confirmDialog(isReview ? '名前の復習を中断しますか？' : 'チャレンジを終了しますか？<br><small>ここまでの正解数が記録されます。</small>', isReview ? '中断する' : '終了する', '続ける');
+  if (!ok || !game) return;
+  if (isReview) { game = null; stack.pop(); render(); return; }
+  finishChallenge(true);
+}
+
+function viewCResult() {
+  const r = lastGame;
+  if (!r) { go('challenge', {}, { reset: true }); return; }
+  const isReview = r.mode === 'review';
+  setTitle(isReview ? '名前の復習 結果' : 'チャレンジ 結果');
+  const due = nameDueList().length;
+  const list = r.history.map((h) => `<button class="name-item ${h.ok ? 'ok' : 'ng'}" data-act="name-item" data-id="${esc(h.item.id)}">
+      <span class="res-mark">${h.ok ? '○' : '×'}</span>
+      <span class="name-text">${esc(h.item.text)}<small>${esc(h.item.read)}</small></span>
+      <span class="name-src">${esc(nameLabel(h.item))}</span></button>`).join('');
+  view.innerHTML = `
+    <section class="card result ${isReview ? '' : 'challenge-over'}">
+      ${isReview ? '' : `<div class="gameover">${r.quit ? 'FINISH' : 'GAME OVER'}</div>`}
+      <div class="result-score"><span class="num">${r.score}</span><span class="unit">問正解</span>${isReview ? `<span class="of">/ ${r.total}</span>` : ''}</div>
+      ${r.newBest ? '<div class="stamp pass">新記録</div>' : ''}
+      ${isReview ? '' : `<div class="result-sub">${esc(CH_MODES[r.mode])}・ベスト ${r.best}問</div>`}
+      <p class="result-msg">${r.missed.length ? `書けなかった ${r.missed.length}件を「復習」に追加しました。` : isReview ? '全部書けました！' : ''}</p>
+      <div class="btn-row">
+        ${due ? `<button class="btn accent" data-act="name-review">間違えた名前を復習（${due}件）</button>` : ''}
+        ${isReview ? '<button class="btn primary big" data-act="challenge-home">チャレンジへ</button>' : `<button class="btn primary big" data-act="challenge-again" data-mode="${r.mode}">もう一度挑戦</button>`}
+      </div>
+    </section>
+    <h3 class="sec-title">出題された名前 <small>タップで読みと復習予定</small></h3>
+    <div class="name-list">${list || '<p class="muted">まだ解答していません</p>'}</div>`;
+}
+
+/* ------------------------------------------------------------------ */
 /* イベント                                                             */
 /* ------------------------------------------------------------------ */
 const VIEWS = {
   home: viewHome, ranks: viewRanks, rank: viewRank, stage: viewStage,
   review: viewReview, dict: viewDict, settings: viewSettings, quiz: viewQuiz, result: viewResult,
-  save: viewSave,
+  save: viewSave, challenge: viewChallenge, cgame: viewCGame, cresult: viewCResult,
 };
 
 view.addEventListener('click', (e) => {
@@ -1539,6 +1929,20 @@ view.addEventListener('click', (e) => {
   switch (a) {
     case 'home': go('home', {}, { reset: true }); break;
     case 'save': go('save'); break;
+    // チャレンジ
+    case 'challenge-home': go('challenge', {}, { reset: true }); break;
+    case 'challenge-again': startChallenge(el.dataset.mode || 'mix'); break;
+    case 'name-review': startNameReview(); break;
+    case 'name-item': showNameItem(el.dataset.id); break;
+    case 'cbox': if (game && game.cur.phase === 'write') cMove(Number(el.dataset.bi)); break;
+    case 'cprev': if (game) cMove(game.cur.bi - 1); break;
+    case 'cnext': if (game) cMove(game.cur.bi + 1); break;
+    case 'csubmit': if (game) cSubmit(); break;
+    case 'cgiveup': if (game) cGiveUp(); break;
+    case 'cself-ok': if (game) { game.cur.ok = true; game.cur.boxes.forEach((b) => { b.ok = true; }); cFinalize(); } break;
+    case 'cself-ng': if (game) { game.cur.ok = false; cFinalize(); } break;
+    case 'coverride': if (game) { game.cur.ok = true; game.cur.overridden = true; game.cur.boxes.forEach((b) => { b.ok = true; }); viewCGame(); } break;
+    case 'cfinal': if (game) cFinalize(); break;
     case 'rank': {
       const r = Number(el.dataset.r);
       go('rank', { r, focus: el.dataset.focus || null }, { replace: current().name === 'result' });
@@ -1608,6 +2012,10 @@ $('#tabbar').addEventListener('click', (e) => {
     });
     return;
   }
+  if (current() && current().name === 'cgame') {
+    confirmChallengeQuit();
+    return;
+  }
   go(b.dataset.tab, {}, { reset: true });
 });
 
@@ -1649,7 +2057,11 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 
 // 自動テスト用フック（?debug を付けたときのみ）
 if (new URLSearchParams(location.search).has('debug')) {
-  window.__anikan = { quizTarget: () => (quiz && quiz.cur ? quiz.cur.ch : null), state: () => S };
+  window.__anikan = {
+    quizTarget: () => (quiz && quiz.cur ? quiz.cur.ch : null),
+    state: () => S,
+    gameCur: () => (game && game.cur ? { text: game.cur.item.text, boxes: game.cur.boxes.map((b) => b.ch), bi: game.cur.bi, phase: game.cur.phase } : null),
+  };
 }
 
 go('home');

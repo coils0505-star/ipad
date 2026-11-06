@@ -142,7 +142,8 @@ a { color: var(--primary); }
   outline: none;
 }
 .app[data-view="quiz"] .view { padding-bottom: 28px; }
-.app[data-view="quiz"] .tabbar { display: none; }
+.app[data-view="quiz"] .tabbar, .app[data-view="cgame"] .tabbar { display: none; }
+.app[data-view="cgame"] .view { padding-bottom: 28px; }
 
 .tabbar {
   position: fixed;
@@ -814,3 +815,63 @@ a { color: var(--primary); }
 .rank-emblem.has-sub { font-family: var(--font); font-size: 26px; }
 .rank-emblem.has-sub small { font-size: 17px; }
 .level-sec { scroll-margin-top: calc(env(safe-area-inset-top) + 76px); }
+
+/* ------------------------------ チャレンジモード ------------------------------ */
+.ch-badge { flex: none; width: 76px; height: 76px; border-radius: 22px; display: grid; place-items: center; font-family: var(--font-k); font-size: 46px; font-weight: 800; color: #fff; background: linear-gradient(140deg, #ff8a3d, var(--accent) 55%, var(--primary)); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.15); }
+.ch-badge.small { width: 52px; height: 52px; font-size: 30px; border-radius: 16px; }
+.challenge-hero { display: flex; gap: 18px; align-items: center; }
+.challenge-hero h2 { margin: 0 0 4px; }
+.challenge-hero p { margin: 0; }
+.lives-inline { color: var(--accent); }
+.ch-mode { margin-bottom: 6px; }
+.ch-best { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 10px; }
+.ch-best .tile { box-shadow: none; background: var(--surface-2); }
+.challenge-card { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.challenge-card-body { flex: 1; min-width: 220px; }
+.accent-text { color: var(--accent); }
+.hearts { display: inline-flex; gap: 2px; font-size: 22px; line-height: 1; margin-right: 6px; }
+.hearts i { font-style: normal; color: var(--accent); transition: transform 0.2s, opacity 0.2s; }
+.hearts i.off { color: var(--line); }
+.quiz-progress .hearts { font-size: 24px; }
+.cname { font-family: var(--font-k); font-size: clamp(30px, 5vw, 46px); line-height: 1.5; margin: 6px 0; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 2px; }
+.ctext { display: inline-block; }
+.cbox {
+  width: 1.15em; height: 1.15em;
+  padding: 0;
+  border: 3px dashed var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  display: inline-grid; place-items: center;
+  overflow: hidden;
+  font: inherit;
+}
+.cbox.filled { border-style: solid; border-color: var(--line); background: var(--pad-bg); }
+.cbox.cur { border-style: solid; border-color: var(--primary); box-shadow: 0 0 0 4px var(--primary-soft); background: var(--surface); }
+.cbox img { width: 100%; height: 100%; object-fit: contain; }
+.cans { display: inline-block; padding: 0 0.06em; border-radius: 8px; }
+.cans.ok { color: var(--good); }
+.cans.ng { color: var(--bad); background: var(--bad-soft); text-decoration: underline wavy; text-underline-offset: 0.18em; }
+.ccompare { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin: 10px 0; }
+.ccompare figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border-radius: 14px; border: 2px solid var(--line); background: var(--surface); }
+.ccompare figure.ok { border-color: color-mix(in srgb, var(--good) 55%, var(--line)); }
+.ccompare figure.ng { border-color: var(--bad); background: var(--bad-soft); }
+.ccompare img, .ccompare .empty-ink { width: 92px; height: 92px; border-radius: 10px; background: var(--pad-bg); display: grid; place-items: center; }
+.ccompare figcaption { display: flex; flex-direction: column; align-items: center; }
+.answer-k.small { font-size: 36px; width: auto; height: auto; border: 0; background: none; }
+.cand-mini { font-size: 11px; color: var(--muted); }
+.gameover { font-size: 42px; font-weight: 900; letter-spacing: 0.08em; background: linear-gradient(90deg, var(--accent), var(--primary)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.challenge-over .result-score .num { color: var(--primary); }
+.name-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.name-item { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; gap: 0 10px; align-items: center; text-align: left; border: 1px solid var(--line); background: var(--surface); border-radius: 14px; padding: 8px 12px; }
+.name-item.ng { background: var(--bad-soft); }
+.name-item.ok .res-mark { color: var(--good); }
+.name-item.ng .res-mark { color: var(--bad); }
+.name-item .res-mark { grid-row: span 2; }
+.name-text { font-family: var(--font-k); font-size: 22px; line-height: 1.3; }
+.name-text small { display: block; font-family: var(--font); font-size: 12px; color: var(--muted); }
+.name-src { font-size: 12px; color: var(--muted); }
+.name-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.name-chip { border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 4px 12px; font-family: var(--font-k); font-size: 16px; }
+.name-big { font-family: var(--font-k); font-size: 44px; line-height: 1.3; margin: 10px 0 4px; word-break: break-all; }
+.topbar-right .hearts { font-size: 18px; }
+@media (max-width: 700px) { .topbar-right .hearts { display: none; } }

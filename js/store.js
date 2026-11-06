@@ -20,6 +20,8 @@ function freshState() {
     attempts: {},    // { stageGlobalIndex: count }
     exams: {},       // { rank: bestScore }  rank = 1..10
     srs: {},         // { 漢字: {S, due, last, reps, lapses, ease, rl, pS} }
+    csrs: {},        // チャレンジで間違えたタイトル・キャラ名 { 't:鬼滅の刃': {…同上} }
+    challenge: { best: {}, plays: 0 },  // ベスト記録 { mix: 12, title: 8, char: 5 }
     days: {},        // { 'YYYY-MM-DD': {n: 解答数, ok: 正解数, learned: 新規数} }
     settings: { ...DEFAULT_SETTINGS },
   };

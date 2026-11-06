@@ -9,29 +9,36 @@ function round(n, digits) {
 }
 
 // 復習データを配列に詰めて短くする
-function compact(state) {
+function packMap(map) {
   const s = {};
-  for (const ch in state.srs) {
-    const it = state.srs[ch];
+  for (const ch in map || {}) {
+    const it = map[ch];
     s[ch] = [
       round(it.S, it.S < 1 ? 5 : 3), round(it.ease, 2), it.reps, it.lapses, it.rl ? 1 : 0,
       Math.round(it.last / MIN), Math.round(it.due / MIN), round(it.pS || 0, 3), Math.round((it.first || it.last) / MIN),
     ];
   }
-  const { srs, ...rest } = state;
-  return { ...rest, srs: s, _c: 1 };
+  return s;
+}
+
+function unpackMap(packed) {
+  const map = {};
+  for (const ch in packed || {}) {
+    const [S, ease, reps, lapses, rl, last, due, pS, first] = packed[ch];
+    map[ch] = { S, ease, reps, lapses, rl: !!rl, last: last * MIN, due: due * MIN, first: first * MIN };
+    if (pS) map[ch].pS = pS;
+  }
+  return map;
+}
+
+function compact(state) {
+  return { ...state, srs: packMap(state.srs), csrs: packMap(state.csrs), _c: 1 };
 }
 
 function expand(obj) {
   if (!obj || obj._c !== 1) return obj;
-  const srs = {};
-  for (const ch in obj.srs) {
-    const [S, ease, reps, lapses, rl, last, due, pS, first] = obj.srs[ch];
-    srs[ch] = { S, ease, reps, lapses, rl: !!rl, last: last * MIN, due: due * MIN, first: first * MIN };
-    if (pS) srs[ch].pS = pS;
-  }
   const { _c, ...rest } = obj;
-  return { ...rest, srs };
+  return { ...rest, srs: unpackMap(obj.srs), csrs: unpackMap(obj.csrs) };
 }
 
 function toB64url(bytes) {

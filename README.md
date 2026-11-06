@@ -13,6 +13,7 @@ iPad の Safari で動く Web アプリ（PWA）なので、インストール�
 | 忘却曲線で復習 | 字ごとに記憶の安定度 S を記録し、記憶保持率 `R = 0.9^(経過日数 / S)` が **90%** を下回る頃に復習を出題。正解するたびに間隔が約2.5倍（1日→3日→6日→2週間→1か月…）、間違えると10分後から覚え直し。アプリを開くと復習アラート、アイコンバッジ、カレンダー通知（.ics）で復習を促します |
 | Apple Pencil で解答 | 筆圧対応のキャンバスに手書き。ペンを検出すると指・手のひらのタッチを自動で無視（パームリジェクション）。1画戻す／消す／なぞり書き練習 |
 | 自動採点 | 手書き文字を認識して正誤判定（認識候補の1位／3位／5位までを選択可）。誤認識時は「認識ミス（正解にする）」で訂正可能。オフライン時はお手本と見比べる自己採点に自動で切り替え |
+| チャレンジモード | メジャーな **アニメタイトル3,000件・キャラクター名7,000件** から出題。名前の中の漢字を **ひと文字ずつ全部** 書き、1字でも違えば不正解。**5回間違えたらゲームオーバー**（ライフ制）。最初は有名作品から、正解が続くほど幅広い作品から出題。ベスト記録を保存。間違えたタイトル・キャラ名は **復習待ちに追加** され、忘却曲線に沿って「名前の復習」として出題 |
 | 漢字図鑑 | 1万字を学習状態（未学習・学習中・要復習・定着）で色分け表示。漢字・読み・英語で検索、字ごとの忘却曲線グラフ |
 | セーブ | 学習状況は解答のたびに **自動セーブ**（右上の「セーブ」ボタンで確認）。セーブ画面から **セーブスロット**（3つ。ロード・リセット前の状態は自動バックアップに残る）、**ファイル書き出し**（共有メニューから iCloud Drive などへ）／読み込み、**セーブコード**（1行の文字列）のコピー＆貼り付けで、Safari とホーム画面のアプリ間や別の iPad へ引き継ぎ可能。しばらくバックアップしていないとホームでお知らせ |
 
@@ -49,9 +50,12 @@ js/store.js             学習データの自動セーブ・読み込み
 js/slots.js             セーブスロット（IndexedDB）
 js/savedata.js          セーブコードの作成・読み込み
 js/data.js              漢字データへのアクセス・ランク／サブランク定義・検索
+data/challenge-data.js  チャレンジ用のアニメタイトル・キャラクター名（自動生成・初回のみ読み込み）
 data/kanji-data.js      1万字のデータ（自動生成）
 tools/anime_corpus.txt  アニメタイトル・キャラクター名・頻出語コーパス
 tools/build_data.py     漢字データ生成スクリプト
+tools/fetch_challenge_sources.py  チャレンジ用データの取得（Wikidata・Wikipedia）
+tools/build_challenge.py          チャレンジ用データの生成
 sw.js / manifest.webmanifest / icons/   PWA（オフライン対応・ホーム画面アイコン）
 ```
 
@@ -71,9 +75,26 @@ python3 tools/build_data.py jamdict_data-1.5/jamdict_data/jamdict.db
 出題には、アニメタイトル／キャラクター名／頻出語 → 一般語 → 人名・地名 の順で例を選び、例がない字は読み・部首・画数・意味から出題します。
 コーパス（`tools/anime_corpus.txt`）に作品名やキャラクター名を追加して再生成すれば、出題や並び順に反映されます。
 
+## チャレンジ用データの作り方
+
+```sh
+# 1) Wikidata（アニメ作品・キャラクター・知名度）と日本語版 Wikipedia（作品記事・「〜の登場人物」記事）を取得
+python3 tools/fetch_challenge_sources.py CACHE_DIR      # query.wikidata.org と ja.wikipedia.org への接続が必要
+# 2) 読みの補完に mecab-ipadic-NEologd の seed 辞書を用意
+curl -LO https://raw.githubusercontent.com/neologd/mecab-ipadic-neologd/master/seed/mecab-user-dict-seed.20200910.csv.xz
+xz -dk mecab-user-dict-seed.20200910.csv.xz
+# 3) 生成（jamdict.db は一般名詞をキャラ名から除くのに使用）
+python3 tools/build_challenge.py CACHE_DIR mecab-user-dict-seed.20200910.csv jamdict_data-1.5/jamdict_data/jamdict.db
+```
+
+- タイトル: Wikidata のアニメ作品（テレビ・映画・OVA・Web）のうち漢字を含むものを、他言語版を含む Wikipedia 記事数（知名度）の順に。読みは Wikipedia 記事冒頭の「'''作品名'''（よみ）」、NEologd、`tools/anime_corpus.txt` から。
+- キャラクター: Wikipedia の登場人物一覧の「; 名前（よみ）」見出しと Wikidata のキャラクターから、作品の知名度と登場順で。1作品あたり最大45人。「〜さん」「〜の母」などの呼び名や一般名詞は除外。
+- 自動抽出のため、まれに読みや作品の表示が実際と異なる場合があります。
+
 ## ライセンス・出典
 
 - 漢字・単語・人名データ: [KANJIDIC2](https://www.edrdg.org/wiki/index.php/KANJIDIC_Project)、[JMdict](https://www.edrdg.org/jmdict/j_jmdict.html)、JMnedict
   © Electronic Dictionary Research and Development Group — [CC BY-SA 4.0](https://www.edrdg.org/edrdg/licence.html)。
   これらから生成した `data/kanji-data.js` も同ライセンスに従います。
+- チャレンジ用データ: [Wikidata](https://www.wikidata.org/)（CC0）、[Wikipedia 日本語版](https://ja.wikipedia.org/)の記事見出し（CC BY-SA 4.0）、[mecab-ipadic-NEologd](https://github.com/neologd/mecab-ipadic-neologd)（Apache License 2.0、はてなキーワード等を含む）。
 - 作品名・キャラクター名は各権利者に帰属します。本アプリは学習目的で名称を引用しており、各作品とは関係ありません。

@@ -35,9 +35,13 @@ function schedule(item, now) {
   item.due = now + item.S * DAY;
 }
 
-// 新しく出会った字（ステージテスト・昇格試験で初出題）
-export function learn(ch, correct, now = Date.now()) {
-  const srs = store.get().srs;
+function mapOf(name) {
+  const st = store.get();
+  return st[name] || (st[name] = {});
+}
+
+// 新しく出会った項目（ステージテスト・昇格試験・チャレンジで初出題）
+function _learn(map, key, correct, now) {
   const item = { S: 1, ease: 2.5, reps: 1, lapses: 0, rl: false, first: now };
   if (!correct) {
     item.S = RELEARN_MIN / 1440;
@@ -46,15 +50,14 @@ export function learn(ch, correct, now = Date.now()) {
     item.lapses = 1;
   }
   schedule(item, now);
-  srs[ch] = item;
+  map[key] = item;
   return item;
 }
 
 // 復習で解答
-export function review(ch, correct, now = Date.now()) {
-  const srs = store.get().srs;
-  let item = srs[ch];
-  if (!item) return learn(ch, correct, now);
+function _review(map, key, correct, now) {
+  const item = map[key];
+  if (!item) return _learn(map, key, correct, now);
   const elapsed = Math.max(0, (now - item.last) / DAY);
   item.reps++;
   if (correct) {
@@ -81,54 +84,50 @@ export function review(ch, correct, now = Date.now()) {
   return item;
 }
 
-// ステージ再挑戦など、予定より前の解答は記憶の伸びに使わず、間違いだけ反映する
-export function softUpdate(ch, correct, now = Date.now()) {
-  const item = store.get().srs[ch];
-  if (!item) return learn(ch, correct, now);
-  if (now >= item.due) return review(ch, correct, now);
-  if (!correct) return review(ch, false, now);
+// 予定より前の解答は記憶の伸びに使わず、間違いだけ反映する
+function _softUpdate(map, key, correct, now) {
+  const item = map[key];
+  if (!item) return _learn(map, key, correct, now);
+  if (now >= item.due) return _review(map, key, correct, now);
+  if (!correct) return _review(map, key, false, now);
   return item;
 }
 
-export function dueList(now = Date.now()) {
-  const srs = store.get().srs;
+function _dueList(map, now) {
   const list = [];
-  for (const ch in srs) {
-    if (srs[ch].due <= now) list.push(ch);
+  for (const k in map) {
+    if (map[k].due <= now) list.push(k);
   }
   // 忘れかけている（保持率が低い）順
-  list.sort((a, b) => retention(srs[a], now) - retention(srs[b], now));
+  list.sort((a, b) => retention(map[a], now) - retention(map[b], now));
   return list;
 }
 
-export function nextDue(now = Date.now()) {
-  const srs = store.get().srs;
+function _nextDue(map, now) {
   let min = Infinity;
-  for (const ch in srs) {
-    if (srs[ch].due > now && srs[ch].due < min) min = srs[ch].due;
+  for (const k in map) {
+    if (map[k].due > now && map[k].due < min) min = map[k].due;
   }
   return min === Infinity ? null : min;
 }
 
 // 今後 n 日の復習予定数（0 = 今日中）
-export function forecast(days = 7, now = Date.now()) {
-  const srs = store.get().srs;
+function _forecast(map, days, now) {
   const out = new Array(days).fill(0);
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
-  for (const ch in srs) {
-    const d = Math.floor((srs[ch].due - start.getTime()) / DAY);
+  for (const k in map) {
+    const d = Math.floor((map[k].due - start.getTime()) / DAY);
     const idx = Math.max(0, d);
     if (idx < days) out[idx]++;
   }
   return out;
 }
 
-export function summary(now = Date.now()) {
-  const srs = store.get().srs;
+function _summary(map, now) {
   let learned = 0, master = 0, weak = 0, due = 0, sumR = 0;
-  for (const ch in srs) {
-    const it = srs[ch];
+  for (const k in map) {
+    const it = map[k];
     learned++;
     const st = status(it);
     if (st === 'master') master++;
@@ -139,13 +138,33 @@ export function summary(now = Date.now()) {
   return { learned, master, weak, due, avgR: learned ? sumR / learned : 0 };
 }
 
-export function weakList(limit = 50) {
-  const srs = store.get().srs;
-  return Object.keys(srs)
-    .filter((ch) => srs[ch].lapses > 0)
-    .sort((a, b) => srs[b].lapses - srs[a].lapses || retention(srs[a]) - retention(srs[b]))
+function _weakList(map, limit) {
+  return Object.keys(map)
+    .filter((k) => map[k].lapses > 0)
+    .sort((a, b) => map[b].lapses - map[a].lapses || retention(map[a]) - retention(map[b]))
     .slice(0, limit);
 }
+
+function api(name) {
+  return {
+    learn: (k, ok, now = Date.now()) => _learn(mapOf(name), k, ok, now),
+    review: (k, ok, now = Date.now()) => _review(mapOf(name), k, ok, now),
+    softUpdate: (k, ok, now = Date.now()) => _softUpdate(mapOf(name), k, ok, now),
+    dueList: (now = Date.now()) => _dueList(mapOf(name), now),
+    nextDue: (now = Date.now()) => _nextDue(mapOf(name), now),
+    forecast: (days = 7, now = Date.now()) => _forecast(mapOf(name), days, now),
+    summary: (now = Date.now()) => _summary(mapOf(name), now),
+    weakList: (limit = 50) => _weakList(mapOf(name), limit),
+    get: (k) => mapOf(name)[k],
+  };
+}
+
+// 漢字1字ごとの復習
+const kanji = api('srs');
+export const { learn, review, softUpdate, dueList, nextDue, forecast, summary, weakList } = kanji;
+
+// チャレンジモードで間違えたタイトル・キャラクター名の復習
+export const names = api('csrs');
 
 export function formatInterval(ms) {
   const m = Math.round(ms / MIN);
