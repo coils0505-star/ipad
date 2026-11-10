@@ -2,7 +2,8 @@
 """チャレンジモード用データの取得（ネットワークが必要）
 
 Wikidata（SPARQL）でアニメ作品・原作・キャラクターを集め、日本語版 Wikipedia の
-本文（作品記事と「〜の登場人物」記事）を取得してキャッシュに保存します。
+本文（作品記事と「〜の登場人物」記事）と、作品記事の閲覧数（直近60日。国内での知名度の目安）を取得して
+キャッシュに保存します。
 保存したキャッシュから tools/build_challenge.py が data/challenge-data.js を作ります。
 
     python3 tools/fetch_challenge_sources.py CACHE_DIR
@@ -141,6 +142,45 @@ def fetch_pages(titles, cache_file):
     return done
 
 
+def fetch_pageviews(titles, cache_file):
+    """日本語版 Wikipedia の記事ごとの直近60日の閲覧数 {記事名: 回数}"""
+    done = json.loads(cache_file.read_text(encoding='utf-8')) if cache_file.exists() else {}
+    # 0 回のものは取得し損ねた可能性があるので取り直す
+    todo = [t for t in dict.fromkeys(titles) if not done.get(t)]
+    print(f'pageviews: {len(titles)} (cached {len(titles) - len(todo)})', file=sys.stderr)
+    for i in range(0, len(todo), 50):
+        batch = todo[i:i + 50]
+        params = {'action': 'query', 'prop': 'pageviews', 'pvipdays': 60, 'format': 'json',
+                  'formatversion': 2, 'redirects': 1, 'maxlag': 5, 'titles': '|'.join(batch)}
+        cont = {}
+        while True:
+            # 一度に返る記事数に上限があるので、continue をたどって全部受け取る
+            data = urllib.parse.urlencode({**params, **cont}).encode()
+            res = http_json('https://ja.wikipedia.org/w/api.php', data=data, tries=8)
+            q = res.get('query', {})
+            alias = {}
+            for n in q.get('normalized', []):
+                alias[n['to']] = n['from']
+            for r in q.get('redirects', []):
+                alias[r['to']] = alias.get(r['from'], r['from'])
+            for pg in q.get('pages', []):
+                if 'pageviews' not in pg:
+                    continue
+                views = sum(v or 0 for v in pg['pageviews'].values())
+                key = alias.get(pg['title'], pg['title'])
+                done[key] = max(done.get(key, 0), views)
+            if 'continue' not in res:
+                break
+            cont = res['continue']
+            time.sleep(1.0)
+        for t in batch:
+            done.setdefault(t, 0)
+        cache_file.write_text(json.dumps(done, ensure_ascii=False), encoding='utf-8')
+        print(f'  {min(i + 50, len(todo))}/{len(todo)}', file=sys.stderr)
+        time.sleep(2.0)
+    return done
+
+
 LIST_LINK = re.compile(r'\[\[([^\]|#]*登場人物[^\]|#]*)(?:[|#][^\]]*)?\]\]|\{\{\s*(?:Main|main|See also|See|Further)\s*\|([^}]*登場人物[^}]*)\}\}')
 
 
@@ -175,6 +215,7 @@ def main(cache_dir):
                         seen.add(part)
                         lists.append(part)
     fetch_pages(lists, cache / 'lists.jsonl')
+    fetch_pageviews(arts, cache / 'pageviews.json')
     (cache / 'articles.json').write_text(json.dumps({'arts': arts, 'score': score, 'lists': lists}, ensure_ascii=False), encoding='utf-8')
     print('done', len(arts), 'articles', len(lists), 'list pages', file=sys.stderr)
 

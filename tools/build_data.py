@@ -14,6 +14,12 @@ EDRDG の KANJIDIC2 / JMdict / JMnedict（jamdict-data パッケージ同梱の 
     アニメコーパス出現数 > 一般語での使用頻度 > 人名・固有名詞での使用頻度
     > 新聞頻度・常用/人名用漢字 の重み付き合計。
 上位から1000字ごとにランク1〜10、10字ごとにステージ（各ランク100ステージ）。
+data/kanji-data.js が既にあるときは、学習の進み具合がずれないよう漢字の並び順はそのまま使い、
+例（出題に使う語）だけを作り直します。並び順も計算し直すときは --reorder を付けます。
+
+出題に使うアニメのタイトル・キャラクター名は、コーパスと data/challenge-data.js
+（tools/build_challenge.py が Wikidata の sitelinks・登場人物一覧での位置から知名度順に並べたもの）から、
+知名度の高いものを優先して選びます。キャラクターには必ず作品名を付けます。
 """
 import hashlib
 import json
@@ -28,6 +34,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CORPUS = ROOT / "tools" / "anime_corpus.txt"
 OUT = ROOT / "data" / "kanji-data.js"
+CHALLENGE = ROOT / "data" / "challenge-data.js"
+
+# 例に使うアニメの名前の知名度（小さいほど有名。キャラクター名の順位と同じ尺度）
+TITLE_W = 2.4             # タイトルの順位 × 2.4（タイトル3000件・キャラクター7000件の順位をそろえる）
+MAX_FAME = 1500           # これより知名度の低いタイトル（約625位以下）・キャラクター（1500位以下）は例に使わない
+CORPUS_TITLE_W = 1.2      # コーパス（手で選んだ有名作品）のタイトルは順位 × 1.2
+CORPUS_TITLE_FAME = 600   # コーパスのタイトルで知名度の順位が分からないもの
+MAX_TITLE_RANK = 300      # コーパスにないタイトルは、知名度300位以内（sitelinks が多い＝海外でも有名）だけ使う
+CORPUS_CHAR_FAME = 1400   # コーパスのキャラクターで順位が分からないもの
+VOCAB_FAME = 700          # アニメ頻出語
+PEOPLE_FAME = 1300        # 歴史・伝説の人物
 
 TOTAL = 10000
 PER_RANK = 1000
@@ -65,9 +82,24 @@ def load_corpus():
             work = line[1:].strip()
             continue
         text, reading = line.split("\t")
-        kind = {"titles": "t", "vocab": "v", "chars": "c"}[section]
+        kind = {"titles": "t", "vocab": "v", "chars": "c", "people": "h"}[section]
         entries.append((text, reading, kind, work if kind == "c" else None))
     return entries
+
+
+def load_fame():
+    """data/challenge-data.js の知名度順のタイトル・キャラクター名 → {表記: (順位, 読み[, 作品名])}"""
+    if not CHALLENGE.exists():
+        return {}, {}
+    s = CHALLENGE.read_text(encoding="utf-8")
+    d = json.loads(s[s.index("window.CHALLENGE_DATA=") + len("window.CHALLENGE_DATA="):].rstrip().rstrip(";"))
+    titles = {}
+    for r, (text, read) in enumerate(d["titles"]):
+        titles.setdefault(text, (r, read))
+    chars = {}
+    for r, (text, read, w) in enumerate(d["chars"]):
+        chars.setdefault(text, (r, read, d["works"][w]))
+    return titles, chars
 
 
 def jis_key(v):
@@ -247,6 +279,17 @@ def main(dbpath):
     cand.sort(key=lambda c: (-round(c["score"], 6), hashlib.md5(c["k"].encode()).hexdigest()))
     print("candidates:", len(cand), file=sys.stderr)
     selected = cand[:TOTAL]
+    if OUT.exists() and "--reorder" not in sys.argv:
+        # 既存の並び順（ランク・ステージの中身）を変えない
+        s = OUT.read_text(encoding="utf-8")
+        old = json.loads(s[s.index("window.KANJI_DATA=") + len("window.KANJI_DATA="):].rstrip().rstrip(";"))
+        by_k = {c["k"]: c for c in cand}
+        order = [e["k"] for e in old["kanji"]]
+        missing = [k for k in order if k not in by_k]
+        if missing:
+            sys.exit(f"既存の並び順の字が候補にありません: {''.join(missing[:20])}（--reorder で作り直せます）")
+        selected = [by_k[k] for k in order]
+        print("kept existing order", file=sys.stderr)
     index = {c["k"]: i for i, c in enumerate(selected)}
 
     def difficulty_of(text, target):
@@ -314,10 +357,37 @@ def main(dbpath):
     rsmap = RS()
 
     # ---------------- example selection ----------------
-    corpus_by_char = defaultdict(list)
-    for text, reading, kind, src in corpus:
+    # アニメの名前（コーパス + 知名度順のタイトル・キャラクター名）を字ごとに。同じ表記はコーパスの読み・作品名を使う
+    fame_t, fame_c = load_fame()
+    anime_by_char = defaultdict(dict)  # ch -> text -> (text, reading, kind, work, fame)
+
+    corpus_texts = {text for text, _, _, _ in corpus}
+
+    def add_anime(text, reading, kind, work, fame, from_corpus=False):
+        if fame > MAX_FAME or (kind == "c" and not work):
+            return
+        if not from_corpus and text in corpus_texts:
+            return  # コーパスにある名前は、コーパスの種類・作品名・読みを使う
         for ch in set(text):
-            corpus_by_char[ch].append((text, reading, kind, src))
+            if not is_kanji(ch):
+                continue
+            cur = anime_by_char[ch].get(text)
+            if cur is None or fame < cur[4]:
+                anime_by_char[ch][text] = (text, reading, kind, work, fame)
+
+    for text, reading, kind, src in corpus:
+        if kind == "t":
+            fame = fame_t[text][0] * CORPUS_TITLE_W if text in fame_t else CORPUS_TITLE_FAME
+        elif kind == "c":
+            fame = fame_c[text][0] if text in fame_c else CORPUS_CHAR_FAME
+        else:
+            fame = VOCAB_FAME if kind == "v" else PEOPLE_FAME
+        add_anime(text, reading, kind, src, fame, from_corpus=True)
+    for text, (r, read) in fame_t.items():
+        if r < MAX_TITLE_RANK:
+            add_anime(text, read, "t", None, r * TITLE_W)
+    for text, (r, read, work) in fame_c.items():
+        add_anime(text, read, "c", work, r)
 
     works = []
     work_idx = {}
@@ -334,25 +404,28 @@ def main(dbpath):
         ch = c["k"]
         ex = []
         seen = set()
-        # 1) アニメコーパス
-        ac = corpus_by_char.get(ch, [])
-        kind_order = {"t": 0, "c": 1, "v": 2}
+        # 1) アニメのタイトル・キャラクター名・頻出語（知名度の高い順）
+        ac = list(anime_by_char.get(ch, {}).values())
         ac_sorted = sorted(ac, key=lambda e: (difficulty_of(e[0], ch) > i + 3000,
-                                              len(e[0]) > 12, kind_order[e[2]], len(e[0])))
+                                              len(e[0]) > 12, e[4], len(e[0])))
         used_kinds = Counter()
-        for text, reading, kind, src in ac_sorted:
+        for text, reading, kind, src, _fame in ac_sorted:
             if len(ex) >= 3:
                 break
             if used_kinds[kind] >= 2:
                 continue
             if text in seen:
                 continue
+            # 「鬼滅の刃」と「劇場版 鬼滅の刃 無限列車編」のように同じ作品の題名は1つだけ
+            if kind == "t" and any(x[2] == "t" and (x[0] in text or text in x[0]) for x in ex):
+                continue
             seen.add(text)
             used_kinds[kind] += 1
             item = [text, reading, kind]
-            if src:
+            if kind == "c":
                 item.append(wid(src))
             ex.append(item)
+            stats["ex_" + kind] += 1
         if ex:
             stats["anime"] += 1
         # 2) JMdict 一般語

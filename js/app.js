@@ -1322,11 +1322,23 @@ function shuffle(a) {
   return a;
 }
 
+// 例は「アニメのタイトル・キャラクター名（知名度の高い順）→ 頻出語・一般語」の順に並んでいる。
+// アニメの名前を優先し、その中でも有名なもの（先頭）ほど出やすくする
+const EX_WEIGHT = [0.6, 0.28, 0.12];
 function pickExample(e) {
   if (!e.ex.length) return null;
-  const anime = e.ex.filter((x) => 'tcv'.includes(x[2]));
-  const pool = anime.length && Math.random() < 0.65 ? anime : e.ex;
-  return pool[Math.floor(Math.random() * pool.length)];
+  const anime = e.ex.filter((x) => x[2] === 't' || x[2] === 'c');
+  const other = e.ex.filter((x) => x[2] !== 't' && x[2] !== 'c');
+  if (anime.length && (!other.length || Math.random() < 0.75)) {
+    const w = EX_WEIGHT.slice(0, anime.length);
+    let r = Math.random() * w.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < anime.length; i++) {
+      r -= w[i] ?? 0;
+      if (r < 0) return anime[i];
+    }
+    return anime[0];
+  }
+  return other[Math.floor(Math.random() * other.length)];
 }
 
 function startQuiz(mode, items, extra = {}) {
@@ -1632,6 +1644,7 @@ function loadChallengeData() {
     const titles = D.titles.map(([text, read], i) => ({ id: `t:${text}`, kind: 't', text, read, rank: i }));
     const chars = D.chars.map(([text, read, w], i) => ({ id: `c:${text}|${D.works[w]}`, kind: 'c', text, read, work: D.works[w], rank: i }));
     CH = { titles, chars, byId: new Map([...titles, ...chars].map((x) => [x.id, x])) };
+    migrateNames(CH);
     return CH;
   };
   if (window.CHALLENGE_DATA) return Promise.resolve(prep());
@@ -1645,9 +1658,30 @@ function loadChallengeData() {
 }
 
 function nameLabel(it) {
-  if (it.kind === 't') return 'アニメタイトル';
-  // 「*」付きはジャンルのまとまり（例: *昭和の名作アニメ）
-  return it.work.startsWith('*') ? `${it.work.slice(1)}の登場人物` : `『${it.work}』の登場人物`;
+  return it.kind === 't' ? 'アニメタイトル' : `『${it.work}』の登場人物`;
+}
+
+// データの更新で作品名が変わった（例: 「*昭和の名作アニメ」→「ゲゲゲの鬼太郎」）名前の復習記録を新しい名前につなぎ直す。
+// 収録されなくなった名前の記録は、復習できないまま残らないよう消す
+function migrateNames(ch) {
+  const map = S.csrs || {};
+  const charByText = new Map();
+  for (const it of ch.chars) if (!charByText.has(it.text)) charByText.set(it.text, it);
+  const titleByText = new Map(ch.titles.map((it) => [it.text, it]));
+  let changed = false;
+  for (const id of Object.keys(map)) {
+    if (ch.byId.has(id)) continue;
+    const isChar = id.startsWith('c:');
+    const text = isChar ? id.slice(2).split('|')[0] : id.slice(2);
+    const it = (isChar ? charByText : titleByText).get(text);
+    if (it && !map[it.id]) map[it.id] = map[id];
+    delete map[id];
+    changed = true;
+  }
+  if (changed) {
+    store.save();
+    updateBadge();
+  }
 }
 
 function nameDueList() {
@@ -2132,3 +2166,8 @@ if (new URLSearchParams(location.search).has('debug')) {
 }
 
 go('home');
+
+// 名前の復習記録があるときは、チャレンジ用データを裏で読み込んで記録を最新のデータにつなぎ直す（バッジの件数も正しくする）
+if (Object.keys(S.csrs || {}).length) {
+  setTimeout(() => { loadChallengeData().catch(() => {}); }, 1500);
+}

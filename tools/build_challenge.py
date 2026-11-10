@@ -33,6 +33,11 @@ N_TITLES = 3000
 N_CHARS = 7000
 MAX_PER_WORK = 45
 ANIME = {'Q63952888', 'Q20650540', 'Q1047299', 'Q220898', 'Q1107', 'Q113671041', 'Q581714', 'Q100269041'}
+# 学習アプリに載せない成人向け・性的な題名（題名と、その作品の登場人物を除く）
+ADULT_RE = re.compile(r'淫|痴漢|恥辱|艶母|乳|処女ビッチ|全裸|エロ|Hな|H系|Hができない|H×H|奴隷|幼な妻|鬼畜|一夜妻|夜勤病棟|きゃんきゃんバニー'
+                      r'|^シリーズぴこ$|妖獣教室|肉体転移|檻の中の艶|MAID iN HEAVEN|妖艶絵巻|蜜×蜜')
+FILM = {'Q20650540'}  # アニメ映画（登場人物の作品名はシリーズ名で表示し、映画だけのゲストは知名度を下げる）
+POS_K = 0.5          # 登場人物一覧で後ろに出てくる（主要でない）人物ほど知名度を下げる
 
 KANJI_RE = re.compile(r'[㐀-鿿豈-﫿]')
 IVS_RE = re.compile('[\U000E0100-\U000E01EF︀-️​-‍⁠]')
@@ -83,6 +88,9 @@ def ok_reading(r):
 
 
 # ---------------------------------------------------------------- 入力
+PEOPLE = set()  # コーパスの [people]（特定の作品に結びつかない歴史・伝説の人物）。キャラクターとしては出題しない
+
+
 def load_corpus():
     titles, chars = {}, {}
     section, work = None, None
@@ -98,6 +106,8 @@ def load_corpus():
         text, read = line.split('\t')
         if section == 'titles':
             titles[text] = read
+        elif section == 'people':
+            PEOPLE.add(text)
         elif section == 'chars':
             chars[(text, work)] = read
     return titles, chars
@@ -171,7 +181,13 @@ HONORIFIC = ('さん', 'くん', '君', 'ちゃん', '先生', '様', 'さま', 
 RELATION = re.compile(r'の(?:お?ばあ|お?じい|お?母|お?父|お?兄|お?姉|弟|妹|祖|娘|息子|妻|夫|友|先生|上司|部下|ママ|パパ|飼い|ペット|一味|仲間)')
 
 
+# 登場人物一覧の用語の節などから紛れ込む、人物でない語（魔法・道具・技など）
+NOT_PERSON = re.compile(r'を|する|される|した者|たち$|魔法$|付加|之王$|^[〇一二三四五六七八九十百千万・]+$')
+
+
 def good_name(text):
+    if NOT_PERSON.search(text):
+        return False
     if re.search(r'[0-9０-９A-Za-zＡ-Ｚａ-ｚ「」『』【】〈〉《》=＝、。/／&＆+＋→]', text):
         return False
     if '登場人物' in text or text.endswith(BAD_SUFFIX) or text.endswith(HONORIFIC) or RELATION.search(text):
@@ -288,13 +304,89 @@ def main(cache_dir, neologd, jamdict_db):
     art_work = {art: (art_display(art), sl) for art, sl in art_sl.items()}
     known_titles = {norm_key(w['ja']) for w in works.values() if w.get('ja')} | {norm_key(a) for _, (a, _) in art_work.items()}
 
+    # 映画と、それ以外（テレビシリーズなど）の作品名
+    film_keys, series = set(), {}
+    for w in works.values():
+        if not w.get('ja') or not (set(w['cls']) & ANIME):
+            continue
+        name = re.sub(r'\s*[(（][^)）]*[)）]$', '', clean(w['ja']))
+        if set(w['cls']) & FILM and not (set(w['cls']) - FILM) & ANIME:
+            film_keys.add(norm_key(name))
+        elif w['sl'] >= series.get(norm_key(name), ('', -1))[1]:
+            series[norm_key(name)] = (name, w['sl'])
+    for t in corpus_titles:
+        series.setdefault(norm_key(t), (clean(t), 0))
+    for (_, work) in corpus_chars:
+        series.setdefault(norm_key(work), (work, 0))
+    series_list = sorted(series.items(), key=lambda kv: -len(kv[0]))
+
+    def is_film(name):
+        return norm_key(name) in film_keys or bool(re.match(r'(映画|劇場版)', name))
+
+    def series_name(name):
+        """登場人物の作品名を、映画の題名や「〜シリーズ」ではなくシリーズの作品名にする"""
+        x = re.sub(r'^(映画|劇場版)\s*', '', name)
+        x = re.sub(r'(アニメ映画|のアニメオリジナル|シリーズ)$', '', x).strip('〈〉 　')
+        k = norm_key(x)
+        if not k:
+            return name
+        if k in series and not is_film(x):
+            return series[k][0]
+        # 「名探偵コナン 沈黙の15分」→「名探偵コナン」（区切りの前までがシリーズ名のとき）
+        for sk, (sname, _) in series_list:
+            if len(sk) >= 2 and sk != k and k.startswith(sk) and re.match(r'[\s　\-~〜:：・]', x[len(sname):len(sname) + 1] or ' '):
+                return sname
+        # 「涼宮ハルヒ（シリーズ）」→「涼宮ハルヒの憂鬱」（シリーズ名で始まる最も有名な作品）
+        if name.endswith('シリーズ'):
+            cands = [(sl, sname) for sk, (sname, sl) in series.items() if sk.startswith(k)]
+            if cands:
+                return max(cands)[1]
+        return x if x != name else name
+
+    corpus_names = {norm_key(w): w for (_, w) in corpus_chars}
+    corpus_names.update({norm_key(t): clean(t) for t in corpus_titles})
+
+    def display_work(name):
+        w = series_name(name)
+        m = re.match(r'^(.+?)\s*[-〜~～].+[-〜~～]$', w)
+        if m and norm_key(m.group(1)) in series:
+            w = series[norm_key(m.group(1))][0]
+        return corpus_names.get(norm_key(w), w)
+
+    # 作品の知名度: 他言語版を含む Wikipedia 記事の数（海外での知名度）と、日本語版記事の閲覧数（直近60日。国内での知名度）。
+    # 閲覧数を取得していないときは日本語版記事の長さで代える
+    pv_file = cache / 'pageviews.json'
+    pageviews = json.loads(pv_file.read_text(encoding='utf-8')) if pv_file.exists() else None
+
+    def jlen(art):
+        rec = pages.get(art) if art else None
+        return len(rec.get('text') or '') if rec else 0
+
+    def wfame(sl, art=None):
+        if pageviews is not None:
+            return 5 * math.log1p(sl) + 7 * math.log1p(pageviews.get(art, 0) / 1000)
+        return 5 * math.log1p(sl) + 6 * math.log1p(jlen(art) / 1000)
+
+    # 同じ名前の作品（アニメと原作の漫画など）の中で最も高い知名度。アニメの項目だけ情報が少ないことがある（例: 巨人の星）
+    name_fame = defaultdict(float)
+    for w in works.values():
+        if w.get('ja'):
+            nk = norm_key(re.sub(r'\s*[(（][^)）]*[)）]$', '', clean(w['ja'])))
+            name_fame[nk] = max(name_fame[nk], wfame(w['sl'], w.get('art')))
+
+    # キャラクター自身の知名度（Wikidata の sitelinks）
+    char_sl = defaultdict(int)
+    for c in wd['chars'].values():
+        n = re.sub(r'[\s　]+', '', clean(c['ja']))
+        char_sl[n] = max(char_sl[n], c['sl'])
+
     # ---------- タイトル候補
     cand_titles = {}
     for q, w in works.items():
         if not (set(w['cls']) & ANIME) or not w.get('ja'):
             continue
         text = re.sub(r'\s*[(（][^)）]*[)）]$', '', clean(w['ja']))
-        if not ok_text(text):
+        if not ok_text(text) or ADULT_RE.search(text):
             continue
         k = norm_key(text)
         prev = cand_titles.get(k)
@@ -320,28 +412,28 @@ def main(cache_dir, neologd, jamdict_db):
         art = list_src.get(title)
         if not art or art not in art_work:
             continue
-        wsl = art_work[art][1]
+        wf = max(wfame(art_work[art][1], art), name_fame.get(norm_key(art_work[art][0]), 0))
         # 「名探偵コナンの登場人物」→「名探偵コナン」
         wname = clean(re.sub(r'の登場人物.*$|登場人物.*$', '', title.split('#')[0])) or art_work[art][0]
         wname = re.sub(r'\s*\([^)]*\)$', '', wname)
         if norm_key(wname) != norm_key(art_work[art][0]):
-            same = [sl for a, (d, sl) in art_work.items() if norm_key(d) == norm_key(wname)]
+            same = [a for a, (d, sl) in art_work.items() if norm_key(d) == norm_key(wname)]
             if same:
-                wsl = max(same + [wsl])
+                wf = max([wf] + [wfame(art_work[a][1], a) for a in same])
             elif not norm_key(wname).startswith(norm_key(art_work[art][0])[:4]):
                 # アニメ記事からリンクされているだけの別作品（実写ドラマなど）の一覧は使わない
                 stat['list_unrelated'] += 1
                 continue
         found = extract_characters(rec['text'], True)
         for pos, (text, read) in enumerate(found):
-            cand_chars.append((text, read, wname, wsl, pos, len(found)))
+            cand_chars.append((text, read, wname, wf, pos, len(found)))
     for art, (wname, wsl) in art_work.items():
         rec = pages.get(art)
         if not rec or not rec.get('text'):
             continue
         found = extract_characters(rec['text'], False)
         for pos, (text, read) in enumerate(found):
-            cand_chars.append((text, read, wname, wsl, pos, len(found)))
+            cand_chars.append((text, read, wname, wfame(wsl, art), pos, len(found)))
     # Wikidata のキャラクター
     wd_chars = []
     for q, c in wd['chars'].items():
@@ -352,7 +444,7 @@ def main(cache_dir, neologd, jamdict_db):
         best_w = max((works[w] for w in c['works'] if w in works and works[w].get('ja')), key=lambda w: w['sl'], default=None)
         if not best_w:
             continue
-        wd_chars.append((text, c['kana'], clean(best_w['ja']), best_w['sl'], c['sl']))
+        wd_chars.append((text, c['kana'], clean(best_w['ja']), wfame(best_w['sl'], best_w.get('art')), c['sl']))
 
     # ---------- NEologd で読みを補完
     needed = set()
@@ -414,11 +506,11 @@ def main(cache_dir, neologd, jamdict_db):
     seen = set()
     for text, read in corpus_titles.items():
         text = clean(text)
-        if not ok_text(text) or not ok_reading(read):
+        if not ok_text(text) or not ok_reading(read) or ADULT_RE.search(text):
             continue
         k = norm_key(text)
         sl = cand_titles.get(k, {}).get('sl', 0)
-        titles.append({'text': text, 'read': read, 'score': sl + 25, 'src': 'corpus'})
+        titles.append({'text': text, 'read': read, 'score': max(wfame(sl, cand_titles.get(k, {}).get('art')), name_fame.get(k, 0)) + 5, 'src': 'corpus'})
         seen.add(k)
         known_title_read[text] = read
     for k, t in cand_titles.items():
@@ -435,7 +527,7 @@ def main(cache_dir, neologd, jamdict_db):
         if not read or not ok_reading(read):
             continue
         stat['title_' + src] += 1
-        titles.append({'text': t['text'], 'read': nice_reading(t['text'], read), 'score': t['sl'], 'src': src})
+        titles.append({'text': t['text'], 'read': nice_reading(t['text'], read), 'score': max(wfame(t['sl'], t['art']), name_fame.get(k, 0)), 'src': src})
         known_title_read[t['text']] = kata2hira(read)
         seen.add(k)
     # 2巡目: 読みが分かった作品名などを組み合わせて読みを作る
@@ -447,7 +539,7 @@ def main(cache_dir, neologd, jamdict_db):
             stat['title_noread'] += 1
             continue
         stat['title_composed'] += 1
-        titles.append({'text': t['text'], 'read': nice_reading(t['text'], read), 'score': t['sl'] - 1, 'src': 'composed'})
+        titles.append({'text': t['text'], 'read': nice_reading(t['text'], read), 'score': max(wfame(t['sl'], t['art']), name_fame.get(k, 0)) - 1, 'src': 'composed'})
         seen.add(k)
     titles.sort(key=lambda t: (-t['score'], t['text']))
     titles = titles[:N_TITLES]
@@ -456,10 +548,16 @@ def main(cache_dir, neologd, jamdict_db):
     # 同じ名前が複数の記事に出てくるときは、知名度の最も高いスコアを採用し、
     # 表示する作品名は登場人物の多い（＝シリーズ全体の）記事のものにする
     occ = defaultdict(list)
-    for text, read, wname, wsl, pos, pagesize in cand_chars:
-        occ[text].append({'read': read, 'work': wname, 'score': 10 * math.log1p(wsl) - 0.12 * pos, 'size': pagesize, 'pos': pos, 'src': 'wp'})
-    for text, kanas, wname, wsl, csl in wd_chars:
+    for text, read, wname, wf, pos, pagesize in cand_chars:
+        occ[text].append({'read': read, 'work': wname, 'score': wf - POS_K * pos - (8 if is_film(wname) else 0), 'size': pagesize, 'pos': pos, 'src': 'wp'})
+    corpus_char_names = {re.sub(r'\s+', '', clean(t)) for (t, _) in corpus_chars}
+    for text, kanas, wname, wf, csl in wd_chars:
         if not good_name(text):
+            continue
+        # Wikidata の日本語名は別作品の人物名が入っていることがある（例: NARUTO の香燐が「神月かりん」）ので、
+        # Wikipedia の登場人物一覧かコーパスにも載っている名前だけを使う
+        if text not in occ and text not in corpus_char_names:
+            stat['char_wd_only'] += 1
             continue
         read = None
         for k in kanas:
@@ -474,7 +572,7 @@ def main(cache_dir, neologd, jamdict_db):
             if text not in occ:
                 stat['char_wd_noread'] += 1
             continue
-        occ[text].append({'read': read, 'work': wname, 'score': 10 * math.log1p(wsl) + 2 * math.log1p(csl) - 3, 'size': 0, 'pos': 99, 'src': 'wd'})
+        occ[text].append({'read': read, 'work': wname, 'score': wf - 3 - (8 if is_film(wname) else 0), 'size': 0, 'pos': 99, 'src': 'wd'})
 
     # 表示する作品: 主要人物（記事の前のほう）として載っている記事のうち、登場人物の多い（＝シリーズ全体の）記事
     def pick_display(lst):
@@ -488,16 +586,15 @@ def main(cache_dir, neologd, jamdict_db):
             continue
         pos = corpus_pos[work]
         corpus_pos[work] += 1
+        # コーパスの作品名は実際の作品名（ジャンル名でまとめていない）なのでそのまま表示する
         others = occ.get(text, [])
-        is_title = norm_key(work) in known_titles or norm_key(work) in {norm_key(t) for t in corpus_titles}
+        ct = cand_titles.get(norm_key(work), {})
+        wf = max(wfame(ct.get('sl', 0), ct.get('art')), wfame(series.get(norm_key(work), ('', 0))[1]), wfame(25), name_fame.get(norm_key(work), 0))
+        score = wf - POS_K * pos + 3
         if others:
-            score = max(o['score'] for o in others) + 3
-            wname = work if is_title else pick_display(others)['work']
-        else:
-            wsl = cand_titles.get(norm_key(work), {}).get('sl', 25)
-            score = 10 * math.log1p(wsl) - 0.12 * pos
-            wname = work if is_title else '*' + work
-        by_name[text] = {'text': text, 'read': read, 'work': wname, 'score': score, 'src': 'corpus'}
+            score = max(score, max(o['score'] for o in others) + 3)
+        score += 4 * math.log1p(char_sl.get(text, 0))
+        by_name[text] = {'text': text, 'read': read, 'work': work, 'score': score, 'src': 'corpus'}
     for text, lst in occ.items():
         if text in by_name:
             continue
@@ -508,9 +605,10 @@ def main(cache_dir, neologd, jamdict_db):
         if text in common and kata2hira(read).replace(' ', '') in common[text]:
             stat['char_common_word'] += 1
             continue
-        by_name[text] = {'text': text, 'read': read, 'work': disp['work'], 'score': max(o['score'] for o in lst), 'src': disp['src']}
+        by_name[text] = {'text': text, 'read': read, 'work': display_work(disp['work']), 'score': max(o['score'] for o in lst) + 4 * math.log1p(char_sl.get(text, 0)), 'src': disp['src']}
 
-    chars_all = sorted(by_name.values(), key=lambda c: (-c['score'], c['text']))
+    chars_all = sorted((c for c in by_name.values() if not ADULT_RE.search(c['work']) and c['text'] not in PEOPLE),
+                       key=lambda c: (-c['score'], c['text']))
     per_work = defaultdict(int)
     chars = []
     for c in chars_all:

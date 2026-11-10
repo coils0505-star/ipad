@@ -125,6 +125,7 @@ export function exampleLabel(ex) {
   if (kind === 't') return 'アニメタイトル';
   if (kind === 'c') return `『${WORKS[ex[3]] ?? ''}』の登場人物`;
   if (kind === 'v') return 'アニメ頻出語';
+  if (kind === 'h') return '歴史・伝説の人物';
   if (kind === 'w') return 'ことば';
   if (kind === 'n') return '人名';
   if (kind === 'p') return '地名';
