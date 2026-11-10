@@ -30,6 +30,24 @@ async function requestOnce(ink, w, h, language, timeoutMs, markDown = true) {
   throw lastErr;
 }
 
+// Apple Pencil は1秒に約240回座標を送るため、ゆっくり書くと1字で数千点になる。
+// 細かすぎる点と1px単位の揺れがあると、認識サービスが字の右側や後半を無視して
+// 左の部品だけで判断してしまう（護 →「言」、砂 →「石」、八 →「ル」など）。
+// 送る前に、点と点の間が枠の大きさの1%以上になるよう間引く（各画の最初と最後の点は残す）。
+export function simplifyInk(ink, w, h) {
+  const d = Math.max(2.5, Math.min(w || 0, h || 0) * 0.01);
+  return ink.map(([xs, ys, ts]) => {
+    const X = [xs[0]], Y = [ys[0]], T = [ts[0]];
+    for (let i = 1; i < xs.length; i++) {
+      const k = X.length - 1;
+      if (i === xs.length - 1 || Math.hypot(xs[i] - X[k], ys[i] - Y[k]) >= d) {
+        X.push(xs[i]); Y.push(ys[i]); T.push(ts[i]);
+      }
+    }
+    return [X, Y, T];
+  });
+}
+
 async function requestEndpoint(url, ink, w, h, language, timeoutMs) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -41,7 +59,7 @@ async function requestEndpoint(url, ink, w, h, language, timeoutMs) {
         options: 'enable_pre_space',
         requests: [{
           writing_guide: { writing_area_width: Math.round(w), writing_area_height: Math.round(h) },
-          ink,
+          ink: simplifyInk(ink, w, h),
           language,
           max_num_results: 10,
           max_completions: 0,
@@ -170,7 +188,12 @@ function chars(raw) {
     const ch = Array.from(c)[0];
     if (ch) add(ch);
   }
-  return out;
+  // 枠に入るのは漢字だけなので、カタカナ・ひらがな・記号の候補は漢字の候補より後ろに回す（八 →「ル」など）
+  return out.filter(isKanji).concat(out.filter((c) => !isKanji(c)));
+}
+
+function isKanji(c) {
+  return /^[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff々〆]$|^[\u{20000}-\u{3134f}]$/u.test(c);
 }
 
 const isSplit = (raw) => raw.slice(0, 2).some((c) => Array.from(c).length > 1);
